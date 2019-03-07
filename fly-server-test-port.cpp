@@ -207,7 +207,7 @@ static int begin_request_handler(struct mg_connection *conn, enum mg_event ev)
 
 #endif
 
-static int g_exit_flag = 0;
+volatile static int g_exit_flag = 0;
 
 static void signal_handler(int sig_num)
 {
