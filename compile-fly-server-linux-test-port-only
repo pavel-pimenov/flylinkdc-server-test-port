@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# sudo apt install screen build-essential zlib1g-dev libunwind-dev
+# sudo yum -y install glibc-static libstdc++-static zlib-static
+# sudo ufw allow 37015
+# sudo ufw allow 3690
+
+svn up
+rm fly-server-test-port
+
+gcc -static -std=c++11 -O3 -o fly-server-test-port mongoose-flylinkdc.cpp \
+ CivetServer.cpp \
+ civetweb.c \
+ CDBManager.cpp  \
+ jsoncpp/jsoncpp.cpp \
+ ./zlib/adler32.c \
+ ./zlib/compress.c \
+ ./zlib/crc32.c \
+ ./zlib/deflate.c \
+ ./zlib/gzclose.c \
+ ./zlib/gzlib.c \
+ ./zlib/gzread.c \
+ ./zlib/gzwrite.c \
+ ./zlib/infback.c \
+ ./zlib/inffast.c \
+ ./zlib/inflate.c \
+ ./zlib/inftrees.c \
+ ./zlib/trees.c \
+ ./zlib/uncompr.c \
+ ./zlib/zutil.c \
+ -I ./jsoncpp/include \
+ -D_REENTRANT \
+ -D_NDEBUG \
+ -lstdc++ -lpthread -ldl -lm
+
+# HEAPPROFILE=/tmp/flynetheap ./fly-server-test-port
+echo "Compile Fly-server Ok!"
+valgrind --leak-check=full --leak-resolution=med --track-origins=yes ./fly-server-test-port
+./fly-server-test-port

@@ -1,0 +1,10 @@
+#!/bin/bash
+ulimit -c unlimited
+while true
+do
+echo "Run FlylinkDC++ server-test-port"
+# valgrind --leak-check=full --leak-resolution=med --log-file=valgrind-log-file.log --time-stamp=yes 
+./fly-server-test-port -disable-log-test-port
+echo "Sleep 2s"
+sleep 2s
+done

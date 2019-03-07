@@ -1,0 +1,4 @@
+#docker pull flylinkdc/test-port
+docker run -d -P --net=host --restart always --name fly-server-test-port-docker flylinkdc/test-port
+#docker system prune -af
+#удаление всех мертвых контейнеров
