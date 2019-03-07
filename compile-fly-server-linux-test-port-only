@@ -1,12 +1,9 @@
 #!/bin/bash
 
-# sudo apt install screen build-essential zlib1g-dev libunwind-dev
+# sudo apt install screen build-essential zlib1g-dev
 # sudo yum -y install glibc-static libstdc++-static zlib-static
-# sudo ufw allow 37015
+# sudo ufw allow 37016
 # sudo ufw allow 3690
-
-svn up
-rm fly-server-test-port
 
 gcc -static -std=c++11 -O3 -o fly-server-test-port fly-server-test-port.cpp \
  CivetServer.cpp \
@@ -33,7 +30,3 @@ gcc -static -std=c++11 -O3 -o fly-server-test-port fly-server-test-port.cpp \
  -D_NDEBUG \
  -lstdc++ -lpthread -ldl -lm
 
-# HEAPPROFILE=/tmp/flynetheap ./fly-server-test-port
-echo "Compile Fly-server Ok!"
-valgrind --leak-check=full --leak-resolution=med --track-origins=yes ./fly-server-test-port
-./fly-server-test-port
