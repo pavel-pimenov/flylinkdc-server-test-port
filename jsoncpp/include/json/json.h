@@ -125,8 +125,8 @@ license you like.
 
 #ifndef JSON_CONFIG_H_INCLUDED
 #define JSON_CONFIG_H_INCLUDED
-#include <stddef.h>
-#include <stdint.h> //typedef int64_t, uint64_t
+#include <cstddef>
+#include <cstdint> //typedef int64_t, uint64_t
 #include <string>   //typedef String
 
 /// If defined, indicates that json library is embedded in CppTL library.
@@ -174,60 +174,50 @@ license you like.
 #define JSON_API
 #endif
 
+#if defined(_MSC_VER) && _MSC_VER < 1800
+  #error "ERROR:  Visual Studio 12 (2013) with _MSC_VER=1800 is the oldest supported compiler with sufficient C++11 capabilities"
+#endif
+
+#if defined(_MSC_VER) && _MSC_VER < 1900
+// As recommended at https://stackoverflow.com/questions/2915672/snprintf-and-visual-studio-2010
+   extern JSON_API int msvc_pre1900_c99_snprintf(char *outBuf, size_t size, const char *format, ...);
+#  define jsoncpp_snprintf msvc_pre1900_c99_snprintf
+#else
+#  define jsoncpp_snprintf std::snprintf
+#endif
+
 // If JSON_NO_INT64 is defined, then Json only support C++ "int" type for
 // integer
 // Storages, and 64 bits integer support is disabled.
 // #define JSON_NO_INT64 1
 
 #if defined(_MSC_VER) // MSVC
-#if _MSC_VER <= 1200  // MSVC 6
-// Microsoft Visual Studio 6 only support conversion from __int64 to double
-// (no conversion from unsigned __int64).
-#define JSON_USE_INT64_DOUBLE_CONVERSION 1
-// Disable warning 4786 for VS6 caused by STL (identifier was truncated to '255'
-// characters in the debug information)
-// All projects I've ever seen with VS6 were using this globally (not bothering
-// with pragma push/pop).
-#pragma warning(disable : 4786)
-#endif // MSVC 6
-
-#if _MSC_VER >= 1500 // MSVC 2008
-                     /// Indicates that the following function is deprecated.
 #define JSONCPP_DEPRECATED(message) __declspec(deprecated(message))
-#endif
-
 #endif // defined(_MSC_VER)
 
 // In c++11 the override keyword allows you to explicitly define that a function
 // is intended to override the base-class version.  This makes the code more
 // manageable and fixes a set of common hard-to-find bugs.
+#define JSONCPP_OVERRIDE override    // Define maintained for backwards compatibility of external tools.  C++11 should be used directly in JSONCPP
 #if __cplusplus >= 201103L
-#define JSONCPP_OVERRIDE override
 #define JSONCPP_NOEXCEPT noexcept
 #define JSONCPP_OP_EXPLICIT explicit
-#elif defined(_MSC_VER) && _MSC_VER > 1600 && _MSC_VER < 1900
-#define JSONCPP_OVERRIDE override
+#elif defined(_MSC_VER) && _MSC_VER < 1900
 #define JSONCPP_NOEXCEPT throw()
-#if _MSC_VER >= 1800 // MSVC 2013
 #define JSONCPP_OP_EXPLICIT explicit
-#else
-#define JSONCPP_OP_EXPLICIT
-#endif
 #elif defined(_MSC_VER) && _MSC_VER >= 1900
-#define JSONCPP_OVERRIDE override
 #define JSONCPP_NOEXCEPT noexcept
 #define JSONCPP_OP_EXPLICIT explicit
 #else
-#define JSONCPP_OVERRIDE
 #define JSONCPP_NOEXCEPT throw()
 #define JSONCPP_OP_EXPLICIT
 #endif
 
 #ifndef JSON_HAS_RVALUE_REFERENCES
 
-#if defined(_MSC_VER) && _MSC_VER >= 1600 // MSVC >= 2010
+#if defined(_MSC_VER)
 #define JSON_HAS_RVALUE_REFERENCES 1
-#endif // MSVC >= 2010
+#endif // MSVC >= 2013
 
 #ifdef __clang__
 #if __has_feature(cxx_rvalue_references)
@@ -515,8 +505,8 @@ namespace Json {
 class JSON_API Exception : public std::exception {
 public:
   Exception(JSONCPP_STRING const& msg);
-  ~Exception() JSONCPP_NOEXCEPT JSONCPP_OVERRIDE;
-  char const* what() const JSONCPP_NOEXCEPT JSONCPP_OVERRIDE;
+  ~Exception() JSONCPP_NOEXCEPT override;
+  char const* what() const JSONCPP_NOEXCEPT override;
 
 protected:
   JSONCPP_STRING msg_;
@@ -633,7 +623,7 @@ private:
  * The get() methods can be used to obtain default value in the case the
  * required element does not exist.
  *
- * It is possible to iterate over the list of a #objectValue values using
+ * It is possible to iterate over the list of member keys of an object using
  * the getMemberNames() method.
  *
  * \note #Value string-length fit in size_t, but keys must be < 2^30.
@@ -998,14 +988,11 @@ Json::Value obj_value(Json::objectValue); // {}
   /// \brief Remove and return the named member.
   ///
   /// Do nothing if it did not exist.
-  /// \return the removed Value, or null.
   /// \pre type() is objectValue or nullValue
   /// \post type() is unchanged
-  /// \deprecated
   void removeMember(const char* key);
   /// Same as removeMember(const char*)
   /// \param key may contain embedded nulls.
-  /// \deprecated
   void removeMember(const JSONCPP_STRING& key);
   /// Same as removeMember(const char* begin, const char* end, Value* removed),
   /// but 'key' is null-terminated.
@@ -1604,7 +1591,7 @@ private:
                                    Location end,
                                    unsigned int& unicode);
   bool
-  addError(const JSONCPP_STRING& message, Token& token, Location extra = 0);
+  addError(const JSONCPP_STRING& message, Token& token, Location extra = nullptr);
   bool recoverFromError(TokenType skipUntilToken);
   bool addErrorAndRecover(const JSONCPP_STRING& message,
                           Token& token,
@@ -1730,9 +1717,9 @@ public:
   Json::Value settings_;
 
   CharReaderBuilder();
-  ~CharReaderBuilder() JSONCPP_OVERRIDE;
+  ~CharReaderBuilder() override;
 
-  CharReader* newCharReader() const JSONCPP_OVERRIDE;
+  CharReader* newCharReader() const override;
 
   /** \return true if 'settings' are legal and consistent;
    *   otherwise, indicate bad settings via 'invalid'.
@@ -1741,7 +1728,7 @@ public:
 
   /** A simple way to update a specific setting.
    */
-  Value& operator[](JSONCPP_STRING key);
+  Value& operator[](const JSONCPP_STRING& key);
 
   /** Called by ctor, but you can use this to reset settings_.
    * \pre 'settings' != NULL (but Json::null is fine)
@@ -1936,12 +1923,12 @@ public:
   Json::Value settings_;
 
   StreamWriterBuilder();
-  ~StreamWriterBuilder() JSONCPP_OVERRIDE;
+  ~StreamWriterBuilder() override;
 
   /**
    * \throw std::exception if something goes wrong (e.g. invalid settings)
    */
-  StreamWriter* newStreamWriter() const JSONCPP_OVERRIDE;
+  StreamWriter* newStreamWriter() const override;
 
   /** \return true if 'settings' are legal and consistent;
    *   otherwise, indicate bad settings via 'invalid'.
@@ -1949,7 +1936,7 @@ public:
   bool validate(Json::Value* invalid) const;
   /** A simple way to update a specific setting.
    */
-  Value& operator[](JSONCPP_STRING key);
+  Value& operator[](const JSONCPP_STRING& key);
 
   /** Called by ctor, but you can use this to reset settings_.
    * \pre 'settings' != NULL (but Json::null is fine)
@@ -1986,7 +1973,7 @@ class JSONCPP_DEPRECATED("Use StreamWriterBuilder instead") JSON_API FastWriter
     : public Writer {
 public:
   FastWriter();
-  ~FastWriter() JSONCPP_OVERRIDE {}
+  ~FastWriter() override {}
 
   void enableYAMLCompatibility();
 
@@ -2000,7 +1987,7 @@ public:
   void omitEndingLineFeed();
 
 public: // overridden from Writer
-  JSONCPP_STRING write(const Value& root) JSONCPP_OVERRIDE;
+  JSONCPP_STRING write(const Value& root) override;
 
 private:
   void writeValue(const Value& value);
@@ -2046,14 +2033,14 @@ class JSONCPP_DEPRECATED("Use StreamWriterBuilder instead") JSON_API
     StyledWriter : public Writer {
 public:
   explicit StyledWriter(bool p_use_end_line); //[+]FlylinkDC++
-  ~StyledWriter() JSONCPP_OVERRIDE {}
+  ~StyledWriter() override {}
 
 public: // overridden from Writer
   /** \brief Serialize a Value in <a HREF="http://www.json.org">JSON</a> format.
    * \param root Value to serialize.
    * \return String containing the JSON document that represents the root value.
    */
-  JSONCPP_STRING write(const Value& root) JSONCPP_OVERRIDE;
+  JSONCPP_STRING write(const Value& root) override;
 
 private:
   void writeValue(const Value& value);
@@ -2207,7 +2194,7 @@ JSON_API JSONCPP_OSTREAM& operator<<(JSONCPP_OSTREAM&, const Value& root);
 #define CPPTL_JSON_ASSERTIONS_H_INCLUDED
 
 #include <sstream>
-#include <stdlib.h>
+#include <cstdlib>
 
 #if !defined(JSON_IS_AMALGAMATION)
 #include "config.h"
