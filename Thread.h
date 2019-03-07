@@ -81,18 +81,11 @@ typedef unsigned int uint32_t;
 // typedef unsigned long long uint64_t;
 #endif
 
-typedef std::vector<std::string> TStringList;
-
 
 #ifdef FLYLINKDC_USE_BOOST_LOCK
-typedef boost::recursive_mutex  CriticalSection;
+typedef boost::recursive_mutex CriticalSection;
 typedef boost::detail::spinlock FastCriticalSection;
 typedef boost::lock_guard<boost::recursive_mutex> Lock;
-#ifdef FLYLINKDC_HE
-typedef boost::lock_guard<boost::detail::spinlock> FastLock;
-#else
-typedef Lock FastLock;
-#endif // FLYLINKDC_HE
 #else
 class CriticalSection
 {
