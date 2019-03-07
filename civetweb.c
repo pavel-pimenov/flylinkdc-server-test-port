@@ -1565,6 +1565,7 @@ static int thread_idx_max = 0;
 struct mg_workerTLS {
 	int is_master;
 	unsigned long thread_idx;
+	void *user_ptr;
 #if defined(_WIN32)
 	HANDLE pthread_cond_helper_mutex;
 	struct mg_workerTLS *next_waiting_thread;
@@ -1784,16 +1785,20 @@ typedef struct x509 X509;
 #define SSL_VERIFY_PEER (1)
 #define SSL_VERIFY_FAIL_IF_NO_PEER_CERT (2)
 #define SSL_VERIFY_CLIENT_ONCE (4)
-#define SSL_OP_ALL ((long)(0x80000BFFUL))
-#define SSL_OP_NO_SSLv2 (0x01000000L)
-#define SSL_OP_NO_SSLv3 (0x02000000L)
-#define SSL_OP_NO_TLSv1 (0x04000000L)
-#define SSL_OP_NO_TLSv1_2 (0x08000000L)
-#define SSL_OP_NO_TLSv1_1 (0x10000000L)
-#define SSL_OP_SINGLE_DH_USE (0x00100000L)
-#define SSL_OP_CIPHER_SERVER_PREFERENCE (0x00400000L)
-#define SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION (0x00010000L)
-#define SSL_OP_NO_COMPRESSION (0x00020000L)
+
+#define SSL_OP_ALL (0x80000BFFul)
+
+#define SSL_OP_NO_SSLv2 (0x01000000ul)
+#define SSL_OP_NO_SSLv3 (0x02000000ul)
+#define SSL_OP_NO_TLSv1 (0x04000000ul)
+#define SSL_OP_NO_TLSv1_2 (0x08000000ul)
+#define SSL_OP_NO_TLSv1_1 (0x10000000ul)
+#define SSL_OP_NO_TLSv1_3 (0x20000000ul)
+#define SSL_OP_SINGLE_DH_USE (0x00100000ul)
+#define SSL_OP_CIPHER_SERVER_PREFERENCE (0x00400000ul)
+#define SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION (0x00010000ul)
+#define SSL_OP_NO_COMPRESSION (0x00020000ul)
+#define SSL_OP_NO_RENEGOTIATION (0x40000000ul)
 
 #define SSL_CB_HANDSHAKE_START (0x10)
 #define SSL_CB_HANDSHAKE_DONE (0x20)
@@ -1929,6 +1934,7 @@ struct ssl_func {
 	(*(BIGNUM * (*)(const ASN1_INTEGER *ai, BIGNUM *bn)) crypto_sw[12].ptr)
 #define BN_free (*(void (*)(const BIGNUM *a))crypto_sw[13].ptr)
 #define CRYPTO_free (*(void (*)(void *addr))crypto_sw[14].ptr)
+#define ERR_clear_error (*(void (*)(void))crypto_sw[15].ptr)
 
 #define OPENSSL_free(a) CRYPTO_free(a)
 
@@ -1997,6 +2003,7 @@ static struct ssl_func crypto_sw[] = {{"ERR_get_error", NULL},
                                       {"ASN1_INTEGER_to_BN", NULL},
                                       {"BN_free", NULL},
                                       {"CRYPTO_free", NULL},
+                                      {"ERR_clear_error", NULL},
                                       {NULL, NULL}};
 #else
 
@@ -2115,6 +2122,7 @@ static struct ssl_func crypto_sw[] = {{"ERR_get_error", NULL},
 	(*(BIGNUM * (*)(const ASN1_INTEGER *ai, BIGNUM *bn)) crypto_sw[21].ptr)
 #define BN_free (*(void (*)(const BIGNUM *a))crypto_sw[22].ptr)
 #define CRYPTO_free (*(void (*)(void *addr))crypto_sw[23].ptr)
+#define ERR_clear_error (*(void (*)(void))crypto_sw[24].ptr)
 
 #define OPENSSL_free(a) CRYPTO_free(a)
 
@@ -2195,6 +2203,7 @@ static struct ssl_func crypto_sw[] = {{"CRYPTO_num_locks", NULL},
                                       {"ASN1_INTEGER_to_BN", NULL},
                                       {"BN_free", NULL},
                                       {"CRYPTO_free", NULL},
+                                      {"ERR_clear_error", NULL},
                                       {NULL, NULL}};
 #endif /* OPENSSL_API_1_1 */
 #endif /* NO_SSL_DL */
@@ -2725,15 +2734,20 @@ struct mg_connection {
 	struct timespec req_time; /* Time (since system start) when the request
 	                           * was received */
 	int64_t num_bytes_sent;   /* Total bytes sent to client */
-	int64_t content_len;      /* Content-Length header value */
+	int64_t content_len;      /* How many bytes of content can be read
+	                           * !is_chunked: Content-Length header value
+	                           *              or -1 (until connection closed,
+	                           *                     not allowed for a request)
+	                           * is_chunked: >= 0, appended gradually
+	                           */
 	int64_t consumed_content; /* How many bytes of content have been read */
 	int is_chunked;           /* Transfer-Encoding is chunked:
 	                           * 0 = not chunked,
-	                           * 1 = chunked, do data read yet,
-	                           * 2 = chunked, some data read,
-	                           * 3 = chunked, all data read
+	                           * 1 = chunked, not yet, or some data read,
+	                           * 2 = chunked, has error,
+	                           * 3 = chunked, all data read except trailer,
+	                           * 4 = chunked, all data read
 	                           */
-	size_t chunk_remainder;   /* Unread data from the last chunk */
 	char *buf;                /* Buffer for received data */
 	char *path_info;          /* PATH_INFO part of the URL */
 
@@ -2760,6 +2774,9 @@ struct mg_connection {
 #if defined(USE_LUA) && defined(USE_WEBSOCKET)
 	void *lua_websocket_state; /* Lua_State for a websocket connection */
 #endif
+
+	void *tls_user_ptr; /* User defined pointer in thread local storage,
+	                     * for quick access */
 };
 
 
@@ -3456,6 +3473,22 @@ void *
 mg_get_user_data(const struct mg_context *ctx)
 {
 	return (ctx == NULL) ? NULL : ctx->user_data;
+}
+
+
+void *
+mg_get_thread_pointer(const struct mg_connection *conn)
+{
+	/* both methods should return the same pointer */
+	if (conn) {
+		/* quick access, in case conn is known */
+		return conn->tls_user_ptr;
+	} else {
+		/* otherwise get pointer from thread local storage (TLS) */
+		struct mg_workerTLS *tls =
+		    (struct mg_workerTLS *)pthread_getspecific(sTlsKey);
+		return tls->user_ptr;
+	}
 }
 
 
@@ -6361,6 +6394,8 @@ pull_inner(FILE *fp,
 				DEBUG_TRACE("SSL_read() failed, error %d", err);
 				return -1;
 			}
+
+			ERR_clear_error();
 		} else {
 			err = 0;
 		}
@@ -6395,7 +6430,7 @@ pull_inner(FILE *fp,
 			} else {
 				err = 0;
 			}
-
+			ERR_clear_error();
 		} else if (pollres < 0) {
 			/* Error */
 			return -2;
@@ -6525,7 +6560,6 @@ pull_all(FILE *fp, struct mg_connection *conn, char *buf, int len)
 		} else if (n == 0) {
 			break; /* No more data to read */
 		} else {
-			conn->consumed_content += n;
 			nread += n;
 			len -= n;
 		}
@@ -6539,46 +6573,16 @@ static void
 discard_unread_request_data(struct mg_connection *conn)
 {
 	char buf[MG_BUF_LEN];
-	size_t to_read;
-	int nread;
 
-	if (conn == NULL) {
-		return;
-	}
-
-	to_read = sizeof(buf);
-
-	if (conn->is_chunked) {
-		/* Chunked encoding: 3=chunk read completely
-		 * completely */
-		while (conn->is_chunked != 3) {
-			nread = mg_read(conn, buf, to_read);
-			if (nread <= 0) {
-				break;
-			}
-		}
-
-	} else {
-		/* Not chunked: content length is known */
-		while (conn->consumed_content < conn->content_len) {
-			if (to_read
-			    > (size_t)(conn->content_len - conn->consumed_content)) {
-				to_read = (size_t)(conn->content_len - conn->consumed_content);
-			}
-
-			nread = mg_read(conn, buf, to_read);
-			if (nread <= 0) {
-				break;
-			}
-		}
-	}
+	while (mg_read(conn, buf, sizeof(buf)) > 0)
+		;
 }
 
 
 static int
 mg_read_inner(struct mg_connection *conn, void *buf, size_t len)
 {
-	int64_t n, buffered_len, nread;
+	int64_t content_len, n, buffered_len, nread;
 	int64_t len64 =
 	    (int64_t)((len > INT_MAX) ? INT_MAX : len); /* since the return value is
 	                                                 * int, we may not read more
@@ -6589,25 +6593,18 @@ mg_read_inner(struct mg_connection *conn, void *buf, size_t len)
 		return 0;
 	}
 
-	/* If Content-Length is not set for a request with body data
-	 * (e.g., a PUT or POST request), we do not know in advance
-	 * how much data should be read. */
-	if (conn->consumed_content == 0) {
-		if (conn->is_chunked == 1) {
-			conn->content_len = len64;
-			conn->is_chunked = 2;
-		} else if (conn->content_len == -1) {
-			/* The body data is completed when the connection
-			 * is closed. */
-			conn->content_len = INT64_MAX;
-			conn->must_close = 1;
-		}
+	/* If Content-Length is not set for a response with body data,
+	 * we do not know in advance how much data should be read. */
+	content_len = conn->content_len;
+	if (content_len < 0) {
+		/* The body data is completed when the connection is closed. */
+		content_len = INT64_MAX;
 	}
 
 	nread = 0;
-	if (conn->consumed_content < conn->content_len) {
+	if (conn->consumed_content < content_len) {
 		/* Adjust number of bytes to read. */
-		int64_t left_to_read = conn->content_len - conn->consumed_content;
+		int64_t left_to_read = content_len - conn->consumed_content;
 		if (left_to_read < len64) {
 			/* Do not read more than the total content length of the
 			 * request.
@@ -6634,26 +6631,13 @@ mg_read_inner(struct mg_connection *conn, void *buf, size_t len)
 		 * socket.
 		 */
 		if ((n = pull_all(NULL, conn, (char *)buf, (int)len64)) >= 0) {
+			conn->consumed_content += n;
 			nread += n;
 		} else {
 			nread = ((nread > 0) ? nread : n);
 		}
 	}
 	return (int)nread;
-}
-
-
-static char
-mg_getc(struct mg_connection *conn)
-{
-	char c;
-	if (conn == NULL) {
-		return 0;
-	}
-	if (mg_read_inner(conn, &c, 1) <= 0) {
-		return (char)0;
-	}
-	return c;
 }
 
 
@@ -6672,54 +6656,54 @@ mg_read(struct mg_connection *conn, void *buf, size_t len)
 		size_t all_read = 0;
 
 		while (len > 0) {
-			if (conn->is_chunked == 3) {
+			if (conn->is_chunked >= 3) {
 				/* No more data left to read */
 				return 0;
 			}
+			if (conn->is_chunked != 1) {
+				/* Has error */
+				return -1;
+			}
 
-			if (conn->chunk_remainder) {
-				/* copy from the remainder of the last received chunk */
-				long read_ret;
-				size_t read_now =
-				    ((conn->chunk_remainder > len) ? (len)
-				                                   : (conn->chunk_remainder));
-
-				conn->content_len += (int)read_now;
-				read_ret =
-				    mg_read_inner(conn, (char *)buf + all_read, read_now);
+			if (conn->consumed_content != conn->content_len) {
+				/* copy from the current chunk */
+				int read_ret = mg_read_inner(conn, (char *)buf + all_read,
+				                             len);
 
 				if (read_ret < 1) {
 					/* read error */
+					conn->is_chunked = 2;
 					return -1;
 				}
 
 				all_read += (size_t)read_ret;
-				conn->chunk_remainder -= (size_t)read_ret;
 				len -= (size_t)read_ret;
 
-				if (conn->chunk_remainder == 0) {
+				if (conn->consumed_content == conn->content_len) {
 					/* Add data bytes in the current chunk have been read,
 					 * so we are expecting \r\n now. */
-					char x1, x2;
+					char x[2];
 					conn->content_len += 2;
-					x1 = mg_getc(conn);
-					x2 = mg_getc(conn);
-					if ((x1 != '\r') || (x2 != '\n')) {
+					if ((mg_read_inner(conn, x, 2) != 2)
+					    || (x[0] != '\r') || (x[1] != '\n')) {
 						/* Protocol violation */
+						conn->is_chunked = 2;
 						return -1;
 					}
 				}
 
 			} else {
 				/* fetch a new chunk */
-				int i = 0;
+				size_t i;
 				char lenbuf[64];
-				char *end = 0;
+				char *end = NULL;
 				unsigned long chunkSize = 0;
 
-				for (i = 0; i < ((int)sizeof(lenbuf) - 1); i++) {
+				for (i = 0; i < (sizeof(lenbuf) - 1); i++) {
 					conn->content_len++;
-					lenbuf[i] = mg_getc(conn);
+					if (mg_read_inner(conn, lenbuf + i, 1) != 1) {
+						lenbuf[i] = 0;
+					}
 					if ((i > 0) && (lenbuf[i] == '\r')
 					    && (lenbuf[i - 1] != '\r')) {
 						continue;
@@ -6736,18 +6720,27 @@ mg_read(struct mg_connection *conn, void *buf, size_t len)
 					}
 					if (!isxdigit((unsigned char)lenbuf[i])) {
 						/* illegal character for chunk length */
+						conn->is_chunked = 2;
 						return -1;
 					}
 				}
 				if ((end == NULL) || (*end != '\r')) {
 					/* chunksize not set correctly */
+					conn->is_chunked = 2;
 					return -1;
 				}
 				if (chunkSize == 0) {
+					/* try discarding trailer for keep-alive */
+					conn->content_len += 2;
+					if ((mg_read_inner(conn, lenbuf, 2) == 2)
+					    && (lenbuf[0] == '\r') && (lenbuf[1] == '\n')) {
+						conn->is_chunked = 4;
+					}
 					break;
 				}
 
-				conn->chunk_remainder = chunkSize;
+				/* append a new chunk */
+				conn->content_len += chunkSize;
 			}
 		}
 
@@ -9602,13 +9595,15 @@ handle_static_file_request(struct mg_connection *conn,
 {
 	char date[64], lm[64], etag[64];
 	char range[128]; /* large enough, so there will be no overflow */
-	const char *msg = "OK", *hdr;
+	const char *msg = "OK";
+	const char *range_hdr;
 	time_t curtime = time(NULL);
 	int64_t cl, r1, r2;
 	struct vec mime_vec;
 	int n, truncated;
 	char gz_path[PATH_MAX];
 	const char *encoding = "";
+	const char *origin_hdr;
 	const char *cors_orig_cfg;
 	const char *cors1, *cors2, *cors3;
 	int is_head_request;
@@ -9652,6 +9647,10 @@ handle_static_file_request(struct mg_connection *conn,
 	}
 #endif
 
+	/* Check if there is a range header */
+	range_hdr = mg_get_header(conn, "Range");
+
+	/* For gzipped files, add *.gz */
 	if (filep->stat.is_gzipped) {
 		mg_snprintf(conn, &truncated, gz_path, sizeof(gz_path), "%s.gz", path);
 
@@ -9670,6 +9669,25 @@ handle_static_file_request(struct mg_connection *conn,
 		/* File is already compressed. No "on the fly" compression. */
 		allow_on_the_fly_compression = 0;
 #endif
+	} else if ((conn->accept_gzip) && (range_hdr == NULL)
+	           && (filep->stat.size >= MG_FILE_COMPRESSION_SIZE_LIMIT)) {
+		struct mg_file_stat file_stat;
+
+		mg_snprintf(conn, &truncated, gz_path, sizeof(gz_path), "%s.gz", path);
+
+		if (!truncated && mg_stat(conn, gz_path, &file_stat)
+		    && !file_stat.is_directory) {
+			file_stat.is_gzipped = 1;
+			filep->stat = file_stat;
+			cl = (int64_t)filep->stat.size;
+			path = gz_path;
+			encoding = "Content-Encoding: gzip\r\n";
+
+#if defined(USE_ZLIB)
+			/* File is already compressed. No "on the fly" compression. */
+			allow_on_the_fly_compression = 0;
+#endif
+		}
 	}
 
 	if (!mg_fopen(conn, path, MG_FOPEN_MODE_READ, filep)) {
@@ -9686,9 +9704,9 @@ handle_static_file_request(struct mg_connection *conn,
 	/* If "Range" request was made: parse header, send only selected part
 	 * of the file. */
 	r1 = r2 = 0;
-	hdr = mg_get_header(conn, "Range");
-	if ((hdr != NULL) && ((n = parse_range_header(hdr, &r1, &r2)) > 0)
-	    && (r1 >= 0) && (r2 >= 0)) {
+	if ((range_hdr != NULL)
+	    && ((n = parse_range_header(range_hdr, &r1, &r2)) > 0) && (r1 >= 0)
+	    && (r2 >= 0)) {
 		/* actually, range requests don't play well with a pre-gzipped
 		 * file (since the range is specified in the uncompressed space) */
 		if (filep->stat.is_gzipped) {
@@ -9731,8 +9749,8 @@ handle_static_file_request(struct mg_connection *conn,
 
 	/* Standard CORS header */
 	cors_orig_cfg = conn->dom_ctx->config[ACCESS_CONTROL_ALLOW_ORIGIN];
-	hdr = mg_get_header(conn, "Origin");
-	if (cors_orig_cfg && *cors_orig_cfg && hdr) {
+	origin_hdr = mg_get_header(conn, "Origin");
+	if (cors_orig_cfg && *cors_orig_cfg && origin_hdr) {
 		/* Cross-origin resource sharing (CORS), see
 		 * http://www.html5rocks.com/en/tutorials/cors/,
 		 * http://www.html5rocks.com/static/images/cors_server_flowchart.png
@@ -10533,17 +10551,12 @@ read_message(FILE *fp,
 static int
 forward_body_data(struct mg_connection *conn, FILE *fp, SOCKET sock, SSL *ssl)
 {
-	const char *expect, *body;
+	const char *expect;
 	char buf[MG_BUF_LEN];
-	int to_read, nread, success = 0;
-	int buffered_len;
-	double timeout = -1.0;
+	int success = 0;
 
 	if (!conn) {
 		return 0;
-	}
-	if (conn->dom_ctx->config[REQUEST_TIMEOUT]) {
-		timeout = atoi(conn->dom_ctx->config[REQUEST_TIMEOUT]) / 1000.0;
 	}
 
 	expect = mg_get_header(conn, "Expect");
@@ -10553,14 +10566,7 @@ forward_body_data(struct mg_connection *conn, FILE *fp, SOCKET sock, SSL *ssl)
 		return 0;
 	}
 
-	if ((conn->content_len == -1) && (!conn->is_chunked)) {
-		/* Content length is not specified by the client. */
-		mg_send_http_error(conn,
-		                   411,
-		                   "%s",
-		                   "Error: Client did not specify content length");
-	} else if ((expect != NULL)
-	           && (mg_strcasecmp(expect, "100-continue") != 0)) {
+	if ((expect != NULL) && (mg_strcasecmp(expect, "100-continue") != 0)) {
 		/* Client sent an "Expect: xyz" header and xyz is not 100-continue.
 		 */
 		mg_send_http_error(conn,
@@ -10575,47 +10581,22 @@ forward_body_data(struct mg_connection *conn, FILE *fp, SOCKET sock, SSL *ssl)
 			conn->status_code = 200;
 		}
 
-		buffered_len = conn->data_len - conn->request_len;
-
-		DEBUG_ASSERT(buffered_len >= 0);
 		DEBUG_ASSERT(conn->consumed_content == 0);
 
-		if ((buffered_len < 0) || (conn->consumed_content != 0)) {
+		if (conn->consumed_content != 0) {
 			mg_send_http_error(conn, 500, "%s", "Error: Size mismatch");
 			return 0;
 		}
 
-		if (buffered_len > 0) {
-			if ((int64_t)buffered_len > conn->content_len) {
-				buffered_len = (int)conn->content_len;
-			}
-			body = conn->buf + conn->request_len;
-			push_all(conn->phys_ctx, fp, sock, ssl, body, buffered_len);
-			conn->consumed_content += buffered_len;
-		}
-
-		nread = 0;
-		while (conn->consumed_content < conn->content_len) {
-			to_read = sizeof(buf);
-			if ((int64_t)to_read > conn->content_len - conn->consumed_content) {
-				to_read = (int)(conn->content_len - conn->consumed_content);
-			}
-			nread = pull_inner(NULL, conn, buf, to_read, timeout);
-			if (nread == -2) {
-				/* error */
+		for (;;) {
+			int nread = mg_read(conn, buf, sizeof(buf));
+			if (nread <= 0) {
+				success = (nread == 0);
 				break;
 			}
-			if (nread > 0) {
-				if (push_all(conn->phys_ctx, fp, sock, ssl, buf, nread)
-				    != nread) {
+			if (push_all(conn->phys_ctx, fp, sock, ssl, buf, nread) != nread) {
 					break;
 				}
-				conn->consumed_content += nread;
-			}
-		}
-
-		if (conn->consumed_content == conn->content_len) {
-			success = (nread >= 0);
 		}
 
 		/* Each error code path in this function must send an error */
@@ -11151,9 +11132,9 @@ handle_cgi_request(struct mg_connection *conn, const char *prog)
 	setbuf(err, NULL);
 	fout.access.fp = out;
 
-	if ((conn->request_info.content_length != 0) || (conn->is_chunked)) {
-		DEBUG_TRACE("CGI: send body data (%lli)\n",
-		            (signed long long)conn->request_info.content_length);
+	if ((conn->content_len != 0) || (conn->is_chunked)) {
+		DEBUG_TRACE("CGI: send body data (%" INT64_FMT ")\n",
+		            conn->content_len);
 
 		/* This is a POST/PUT request, or another request with body data. */
 		if (!forward_body_data(conn, in, INVALID_SOCKET, NULL)) {
@@ -15181,6 +15162,7 @@ sslize(struct mg_connection *conn,
 				mg_cry_internal(conn, "sslize error: %s", ssl_error());
 				break;
 			}
+			ERR_clear_error();
 
 		} else {
 			/* success */
@@ -15635,6 +15617,12 @@ ssl_get_protocol(int version_id)
 		ret |= SSL_OP_NO_TLSv1;
 	if (version_id > 3)
 		ret |= SSL_OP_NO_TLSv1_1;
+	if (version_id > 4)
+		ret |= SSL_OP_NO_TLSv1_2;
+#if defined(SSL_OP_NO_TLSv1_3)
+	if (version_id > 5)
+		ret |= SSL_OP_NO_TLSv1_3;
+#endif
 	return ret;
 }
 #else
@@ -15650,6 +15638,12 @@ ssl_get_protocol(int version_id)
 		ret |= SSL_OP_NO_TLSv1;
 	if (version_id > 3)
 		ret |= SSL_OP_NO_TLSv1_1;
+	if (version_id > 4)
+		ret |= SSL_OP_NO_TLSv1_2;
+#if defined(SSL_OP_NO_TLSv1_3)
+	if (version_id > 5)
+		ret |= SSL_OP_NO_TLSv1_3;
+#endif
 	return ret;
 }
 #endif /* OPENSSL_API_1_1 */
@@ -15791,6 +15785,11 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 	SSL_CTX_set_options(dom_ctx->ssl_ctx,
 	                    SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION);
 	SSL_CTX_set_options(dom_ctx->ssl_ctx, SSL_OP_NO_COMPRESSION);
+
+#if defined(SSL_OP_NO_RENEGOTIATION)
+	SSL_CTX_set_options(dom_ctx->ssl_ctx, SSL_OP_NO_RENEGOTIATION);
+#endif
+
 #if !defined(NO_SSL_DL)
 	SSL_CTX_set_ecdh_auto(dom_ctx->ssl_ctx, 1);
 #endif /* NO_SSL_DL */
@@ -16101,8 +16100,6 @@ reset_per_request_attributes(struct mg_connection *conn)
 	conn->must_close = 0;
 	conn->request_len = 0;
 	conn->throttle = 0;
-	conn->data_len = 0;
-	conn->chunk_remainder = 0;
 	conn->accept_gzip = 0;
 
 	conn->response_info.content_length = conn->request_info.content_length = -1;
@@ -16612,9 +16609,18 @@ mg_connect_client_impl(const struct mg_client_options *client_options,
 		}
 
 		if (client_options->server_cert) {
-			SSL_CTX_load_verify_locations(conn->client_ssl_ctx,
+			if (SSL_CTX_load_verify_locations(conn->client_ssl_ctx,
 			                              client_options->server_cert,
-			                              NULL);
+			                                  NULL)
+				!= 1) {
+				mg_cry_internal(conn,
+				                "SSL_CTX_load_verify_locations error: %s ",
+				                ssl_error());
+				SSL_CTX_free(conn->client_ssl_ctx);
+				closesocket(sock);
+				mg_free(conn);
+				return NULL;
+			}
 			SSL_CTX_set_verify(conn->client_ssl_ctx, SSL_VERIFY_PEER, NULL);
 		} else {
 			SSL_CTX_set_verify(conn->client_ssl_ctx, SSL_VERIFY_NONE, NULL);
@@ -17012,15 +17018,29 @@ get_request(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 		return 0;
 	}
 
-	/* Do we know the content length? */
-	if ((cl = get_header(conn->request_info.http_headers,
+	if (((cl = get_header(conn->request_info.http_headers,
 	                     conn->request_info.num_headers,
-	                     "Content-Length"))
-	    != NULL) {
-		/* Request/response has content length set */
+	                      "Transfer-Encoding")) != NULL)
+	    && mg_strcasecmp(cl, "identity")) {
+		if (mg_strcasecmp(cl, "chunked")) {
+			mg_snprintf(conn,
+			            NULL, /* No truncation check for ebuf */
+			            ebuf,
+			            ebuf_len,
+			            "%s",
+			            "Bad request");
+			*err = 400;
+			return 0;
+		}
+		conn->is_chunked = 1;
+		conn->content_len = 0; /* not yet read */
+	} else if ((cl = get_header(conn->request_info.http_headers,
+	                            conn->request_info.num_headers,
+	                            "Content-Length")) != NULL) {
+		/* Request has content length set */
 		char *endptr = NULL;
 		conn->content_len = strtoll(cl, &endptr, 10);
-		if (endptr == cl) {
+		if ((endptr == cl) || (conn->content_len < 0)) {
 			mg_snprintf(conn,
 			            NULL, /* No truncation check for ebuf */
 			            ebuf,
@@ -17032,34 +17052,9 @@ get_request(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 		}
 		/* Publish the content length back to the request info. */
 		conn->request_info.content_length = conn->content_len;
-	} else if ((cl = get_header(conn->request_info.http_headers,
-	                            conn->request_info.num_headers,
-	                            "Transfer-Encoding"))
-	               != NULL
-	           && !mg_strcasecmp(cl, "chunked")) {
-		conn->is_chunked = 1;
-		conn->content_len = -1; /* unknown content length */
-	} else {
-		const struct mg_http_method_info *meth =
-		    get_http_method_info(conn->request_info.request_method);
-		if (!meth) {
-			/* No valid HTTP method */
-			mg_snprintf(conn,
-			            NULL, /* No truncation check for ebuf */
-			            ebuf,
-			            ebuf_len,
-			            "%s",
-			            "Bad request");
-			*err = 411;
-			return 0;
-		}
-		if (meth->request_has_body) {
-			/* POST or PUT request without content length set */
-			conn->content_len = -1; /* unknown content length */
 		} else {
-			/* Other request */
-			conn->content_len = 0; /* No content */
-		}
+		/* There is no exception, see RFC7230. */
+		conn->content_len = 0;
 	}
 
 	conn->connection_type = CONNECTION_TYPE_REQUEST; /* Valid request */
@@ -17090,15 +17085,28 @@ get_response(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 
 	/* Message is a valid response */
 
-	/* Do we know the content length? */
-	if ((cl = get_header(conn->response_info.http_headers,
+	if (((cl = get_header(conn->response_info.http_headers,
 	                     conn->response_info.num_headers,
-	                     "Content-Length"))
-	    != NULL) {
-		/* Request/response has content length set */
+	                      "Transfer-Encoding")) != NULL)
+	     && mg_strcasecmp(cl, "identity")) {
+		if (mg_strcasecmp(cl, "chunked")) {
+			mg_snprintf(conn,
+			            NULL, /* No truncation check for ebuf */
+			            ebuf,
+			            ebuf_len,
+			            "%s",
+			            "Bad request");
+			*err = 400;
+			return 0;
+		}
+		conn->is_chunked = 1;
+		conn->content_len = 0;  /* not yet read */
+	} else if ((cl = get_header(conn->response_info.http_headers,
+	                            conn->response_info.num_headers,
+	                            "Content-Length")) != NULL) {
 		char *endptr = NULL;
 		conn->content_len = strtoll(cl, &endptr, 10);
-		if (endptr == cl) {
+		if ((endptr == cl) || (conn->content_len < 0)) {
 			mg_snprintf(conn,
 			            NULL, /* No truncation check for ebuf */
 			            ebuf,
@@ -17114,15 +17122,20 @@ get_response(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 		/* TODO: check if it is still used in response_info */
 		conn->request_info.content_length = conn->content_len;
 
-	} else if ((cl = get_header(conn->response_info.http_headers,
-	                            conn->response_info.num_headers,
-	                            "Transfer-Encoding"))
-	               != NULL
-	           && !mg_strcasecmp(cl, "chunked")) {
-		conn->is_chunked = 1;
-		conn->content_len = -1; /* unknown content length */
+		/* TODO: we should also consider HEAD method */
+		if (conn->response_info.status_code == 304) {
+			conn->content_len = 0;
+		}
+	} else {
+		/* TODO: we should also consider HEAD method */
+		if (((conn->response_info.status_code >= 100)
+		     && (conn->response_info.status_code <= 199))
+		    || (conn->response_info.status_code == 204)
+		    || (conn->response_info.status_code == 304)) {
+			conn->content_len = 0;
 	} else {
 		conn->content_len = -1; /* unknown content length */
+	}
 	}
 
 	conn->connection_type = CONNECTION_TYPE_RESPONSE; /* Valid response */
@@ -17154,6 +17167,9 @@ mg_get_response(struct mg_connection *conn,
 		            "Parameter error");
 		return -1;
 	}
+
+	/* Reset the previous responses */
+	conn->data_len = 0;
 
 	/* Implementation of API function for HTTP clients */
 	save_timeout = conn->dom_ctx->config[REQUEST_TIMEOUT];
@@ -17218,6 +17234,8 @@ mg_download(const char *host,
 			            "%s",
 			            "Error sending request");
 		} else {
+			/* make sure the buffer is clear */
+			conn->data_len = 0;
 			get_response(conn, ebuf, ebuf_len, &reqerr);
 
 #if defined(MG_LEGACY_INTERFACE)
@@ -17259,6 +17277,8 @@ websocket_client_thread(void *data)
 	struct websocket_client_thread_data *cdata =
 	    (struct websocket_client_thread_data *)data;
 
+	void *user_thread_ptr = NULL;
+
 #if !defined(_WIN32)
 	struct sigaction sa;
 
@@ -17274,8 +17294,8 @@ websocket_client_thread(void *data)
 		if (cdata->conn->phys_ctx->callbacks.init_thread) {
 			/* 3 indicates a websocket client thread */
 			/* TODO: check if conn->phys_ctx can be set */
-			cdata->conn->phys_ctx->callbacks.init_thread(cdata->conn->phys_ctx,
-			                                             3);
+			user_thread_ptr = cdata->conn->phys_ctx->callbacks.init_thread(
+			    cdata->conn->phys_ctx, 3);
 		}
 	}
 
@@ -17290,6 +17310,12 @@ websocket_client_thread(void *data)
 	/* The websocket_client context has only this thread. If it runs out,
 	   set the stop_flag to 2 (= "stopped"). */
 	cdata->conn->phys_ctx->stop_flag = 2;
+
+	if (cdata->conn->phys_ctx->callbacks.exit_thread) {
+		cdata->conn->phys_ctx->callbacks.exit_thread(cdata->conn->phys_ctx,
+		                                             3,
+		                                             user_thread_ptr);
+	}
 
 	mg_free((void *)cdata);
 
@@ -17644,26 +17670,27 @@ process_new_connection(struct mg_connection *conn)
 		 * memmove's below.
 		 * Therefore, memorize should_keep_alive() result now for later
 		 * use in loop exit condition. */
+		/* Enable it only if this request is completely discardable. */
 		keep_alive = (conn->phys_ctx->stop_flag == 0) && should_keep_alive(conn)
-		             && (conn->content_len >= 0);
+		             && (conn->content_len >= 0) && (conn->request_len > 0)
+		             && ((conn->is_chunked == 4)
+		                 || (!conn->is_chunked
+		                     && ((conn->consumed_content == conn->content_len)
+		                         || ((conn->request_len + conn->content_len)
+		                             <= conn->data_len))));
 
-
+		if (keep_alive) {
 		/* Discard all buffered data for this request */
-		discard_len = ((conn->content_len >= 0) && (conn->request_len > 0)
-		               && ((conn->request_len + conn->content_len)
-		                   < (int64_t)conn->data_len))
+			discard_len = ((conn->request_len + conn->content_len)
+			               < conn->data_len)
 		                  ? (int)(conn->request_len + conn->content_len)
 		                  : conn->data_len;
-		DEBUG_ASSERT(discard_len >= 0);
-		if (discard_len < 0) {
-			DEBUG_TRACE("internal error: discard_len = %li",
-			            (long int)discard_len);
-			break;
-		}
 		conn->data_len -= discard_len;
 		if (conn->data_len > 0) {
-			DEBUG_TRACE("discard_len = %lu", (long unsigned)discard_len);
-			memmove(conn->buf, conn->buf + discard_len, (size_t)conn->data_len);
+				DEBUG_TRACE("discard_len = %d", discard_len);
+				memmove(conn->buf, conn->buf + discard_len,
+				        (size_t)conn->data_len);
+			}
 		}
 
 		DEBUG_ASSERT(conn->data_len >= 0);
@@ -17833,6 +17860,7 @@ worker_thread_run(struct mg_connection *conn)
 	struct mg_context *ctx = conn->phys_ctx;
 	int thread_index;
 	struct mg_workerTLS tls;
+
 #if defined(MG_LEGACY_INTERFACE)
 	uint32_t addr;
 #endif
@@ -17848,9 +17876,14 @@ worker_thread_run(struct mg_connection *conn)
 	/* Initialize thread local storage before calling any callback */
 	pthread_setspecific(sTlsKey, &tls);
 
+	/* Check if there is a user callback */
 	if (ctx->callbacks.init_thread) {
-		/* call init_thread for a worker thread (type 1) */
-		ctx->callbacks.init_thread(ctx, 1);
+		/* call init_thread for a worker thread (type 1), and store the return
+		 * value */
+		tls.user_ptr = ctx->callbacks.init_thread(ctx, 1);
+	} else {
+		/* No callback: set user pointer to NULL */
+		tls.user_ptr = NULL;
 	}
 
 	/* Connection structure has been pre-allocated */
@@ -17877,6 +17910,8 @@ worker_thread_run(struct mg_connection *conn)
 
 	conn->dom_ctx = &(ctx->dd); /* Use default domain and default host */
 	conn->host = NULL;          /* until we have more information. */
+
+	conn->tls_user_ptr = tls.user_ptr; /* store ptr for quick access */
 
 	conn->request_info.user_data = ctx->user_data;
 	/* Allocate a mutex for this connection to allow communication both
@@ -17970,6 +18005,12 @@ worker_thread_run(struct mg_connection *conn)
 	}
 
 
+	/* Call exit thread user callback */
+	if (ctx->callbacks.exit_thread) {
+		ctx->callbacks.exit_thread(ctx, 1, tls.user_ptr);
+	}
+
+	/* delete thread local storage objects */
 	pthread_setspecific(sTlsKey, NULL);
 #if defined(_WIN32)
 	CloseHandle(tls.pthread_cond_helper_mutex);
@@ -18136,7 +18177,9 @@ master_thread_run(struct mg_context *ctx)
 
 	if (ctx->callbacks.init_thread) {
 		/* Callback for the master thread (type 0) */
-		ctx->callbacks.init_thread(ctx, 0);
+		tls.user_ptr = ctx->callbacks.init_thread(ctx, 0);
+	} else {
+		tls.user_ptr = NULL;
 	}
 
 	/* Server starts *now* */
@@ -18205,6 +18248,12 @@ master_thread_run(struct mg_context *ctx)
 #endif
 
 	DEBUG_TRACE("%s", "exiting");
+
+	/* call exit thread callback */
+	if (ctx->callbacks.exit_thread) {
+		/* Callback for the master thread (type 0) */
+		ctx->callbacks.exit_thread(ctx, 0, tls.user_ptr);
+	}
 
 #if defined(_WIN32)
 	CloseHandle(tls.pthread_cond_helper_mutex);
@@ -18963,10 +19012,11 @@ mg_get_system_info(char *buffer, int buflen)
 
 	if ((buffer == NULL) || (buflen < 1)) {
 		buflen = 0;
+		end = buffer;
 	} else {
 		*buffer = 0;
+		end = buffer + buflen;
 	}
-	end = buffer + buflen;
 	if (buflen > (int)(sizeof(eoobj) - 1)) {
 		/* has enough space to append eoobj */
 		append_eoobj = buffer;
@@ -19282,10 +19332,11 @@ mg_get_context_info(const struct mg_context *ctx, char *buffer, int buflen)
 
 	if ((buffer == NULL) || (buflen < 1)) {
 		buflen = 0;
+		end = buffer;
 	} else {
 		*buffer = 0;
+		end = buffer + buflen;
 	}
-	end = buffer + buflen;
 	if (buflen > (int)(sizeof(eoobj) - 1)) {
 		/* has enough space to append eoobj */
 		append_eoobj = buffer;
@@ -19442,10 +19493,11 @@ mg_get_connection_info(const struct mg_context *ctx,
 
 	if ((buffer == NULL) || (buflen < 1)) {
 		buflen = 0;
+		end = buffer;
 	} else {
 		*buffer = 0;
+		end = buffer + buflen;
 	}
-	end = buffer + buflen;
 	if (buflen > (int)(sizeof(eoobj) - 1)) {
 		/* has enough space to append eoobj */
 		append_eoobj = buffer;
