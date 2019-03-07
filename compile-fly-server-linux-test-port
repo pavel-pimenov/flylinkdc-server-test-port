@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# sudo apt install screen build-essential zlib1g-dev
-# sudo yum -y install glibc-static libstdc++-static zlib-static
+# sudo apt install screen build-essential
+# sudo yum -y install glibc-static libstdc++-static
 # sudo ufw allow 37016
 # sudo ufw allow 3690
 
