@@ -13,6 +13,5 @@ COPY fly-server-test-port ./
 EXPOSE 37016
 
 RUN chmod +x /usr/src/app/fly*
-#CMD ls /usr/src/app/* -l
 
 ENTRYPOINT /usr/src/app/fly-server-loop

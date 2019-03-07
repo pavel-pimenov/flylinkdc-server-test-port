@@ -8,7 +8,7 @@
 svn up
 rm fly-server-test-port
 
-gcc -static -std=c++11 -O3 -o fly-server-test-port mongoose-flylinkdc.cpp \
+gcc -static -std=c++11 -O3 -o fly-server-test-port fly-server-test-port.cpp \
  CivetServer.cpp \
  civetweb.c \
  CDBManager.cpp  \
