@@ -104,7 +104,7 @@ struct CFlyRegistryValue
 	}
 };
 //==========================================================================
-typedef std::map<string, CFlyRegistryValue> CFlyRegistryMap;
+typedef std::map<std::string, CFlyRegistryValue> CFlyRegistryMap;
 #endif // FLY_SERVER_USE_SQLITE
 //==========================================================================
 struct CFlyPortTestThreadInfo
@@ -231,9 +231,9 @@ class CFlyServerContext
 		void init_in_query(const char* p_content, size_t p_content_len)
 		{
 			if (m_decompress.empty()) // TODO проверять по коду возврата декомпрессии - чтобы 0x78 не слать по ошибке?
-				m_in_query = string(p_content, p_content_len);
+				m_in_query = std::string(p_content, p_content_len);
 			else
-				m_in_query = string(reinterpret_cast<char*>(m_decompress.data()), m_decompress.size());
+				m_in_query = std::string(reinterpret_cast<char*>(m_decompress.data()), m_decompress.size());
 		}
 		size_t get_real_query_size() const
 		{
@@ -281,7 +281,7 @@ class CFlyServerContext
 			{
 				time_t l_now;
 				time(&l_now);
-				const string l_file_name = get_json_file_name("log-internal-sqlite-error", m_remote_ip.c_str(), l_now);
+				const std::string l_file_name = get_json_file_name("log-internal-sqlite-error", m_remote_ip.c_str(), l_now);
 				std::fstream l_log_json(l_file_name.c_str(), std::ios_base::out | std::ios_base::trunc);
 				if (!l_log_json.is_open())
 				{

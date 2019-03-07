@@ -22,12 +22,6 @@
     <Filter Include="Header Files\zlib">
       <UniqueIdentifier>{0a08edb0-b40e-4784-b0c6-18b2ab1893f1}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\zmq">
-      <UniqueIdentifier>{30793ac2-d5d8-4671-9465-a626888fd296}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Header Files\zmq">
-      <UniqueIdentifier>{e6315064-b01f-4918-9d88-b85cb367aaf9}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Header Files\jsoncpp">
       <UniqueIdentifier>{f3569711-9ea4-4f0b-84e0-dd237edd8999}</UniqueIdentifier>
     </Filter>

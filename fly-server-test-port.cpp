@@ -98,9 +98,9 @@ struct CFlyFloodCommand
 	}
 };
 //==========================================================================
-static std::map<string, CFlyFloodCommand> g_ip_counter;
+static std::map<std::string, CFlyFloodCommand> g_ip_counter;
 //==========================================================================
-static void check_ip_flood(const string& p_remote_ip, const int64_t p_tick)
+static void check_ip_flood(const std::string& p_remote_ip, const int64_t p_tick)
 {
 	CFlyFloodCommand& l_ip_stat = g_ip_counter[p_remote_ip];
 	if (l_ip_stat.m_count == 0)
@@ -332,7 +332,7 @@ int main(int argc, char* argv[])
 {
 	for (int i = 1; i < argc; i++)
 	{
-		const string l_argv = argv[i];
+		const std::string l_argv = argv[i];
 		if (l_argv == "-disable-log-test-port")
 		{
 			g_setup_log_disable_test_port = true;

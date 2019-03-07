@@ -19,8 +19,8 @@
 #define closesocket(x) close(x)
 
 #endif
-// DECLARE_PERFORMANCE_FILE_STREAM(C:\\!test\\log-sqlite.log, g_flylinkdc_sqlite);
-
+using std::string;
+//==========================================================================
 bool g_DisableSQLiteWAL    = false;
 //==========================================================================
 bool g_setup_log_disable_test_port = true;
