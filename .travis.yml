@@ -21,4 +21,5 @@ before_install:
     fi
 
 script:
-  - ./compile-fly-server-linux-test-port-only
+  - ./compile-fly-server-linux-test-port
+  
