@@ -155,7 +155,7 @@ static string process_test_port(const CFlyServerContext& p_flyserver_cntx)
 {
 	string l_result;
 	Json::Value l_root;
-	Json::Reader reader; //(Json::Features::strictMode());
+	Json::Reader reader(Json::Features::strictMode());
 	const bool parsingSuccessful = reader.parse(p_flyserver_cntx.m_in_query, l_root);
 	if (!parsingSuccessful)
 	{
