@@ -155,7 +155,7 @@ static string process_test_port(const CFlyServerContext& p_flyserver_cntx)
 {
 	string l_result;
 	Json::Value l_root;
-	Json::Reader reader(Json::Features::strictMode());
+	Json::Reader reader; //(Json::Features::strictMode());
 	const bool parsingSuccessful = reader.parse(p_flyserver_cntx.m_in_query, l_root);
 	if (!parsingSuccessful)
 	{
@@ -349,9 +349,9 @@ void CFlyServerContext::send_syslog() const
 			         (unsigned)m_count_file_in_json,
 			         m_uri.c_str(),
 			         m_remote_ip.c_str(),
-			         get_real_query_size(),
-			         m_content_len,
-					(unsigned)g_count_query,
+			         (unsigned)get_real_query_size(),
+			         (unsigned)m_content_len,
+				(unsigned)g_count_query,
 			         m_user_agent.c_str()
 			        );
 		}
@@ -360,18 +360,18 @@ void CFlyServerContext::send_syslog() const
 			snprintf(l_log_buf, sizeof(l_log_buf), "[%s][%c][%u]%s[%s][%s][%u/%u->%u/%u][time db=%u][%s]%s%s",
 			         m_fly_response.c_str(),
 			         get_compress_flag(),
-			         m_count_file_in_json,
+			         (unsigned)m_count_file_in_json,
 			         "",
 			         m_uri.c_str(),
 			         m_remote_ip.c_str(),
-			         get_real_query_size(),
-			         m_content_len,
-			         m_res_stat.size(),
-			         get_http_len(),
-					 (unsigned)get_delta_db(),
+			         (unsigned)get_real_query_size(),
+			         (unsigned)m_content_len,
+			         (unsigned)m_res_stat.size(),
+			         (unsigned)get_http_len(),
+				 (unsigned)get_delta_db(),
 			         m_user_agent.c_str(),
-			         l_buf_cache,
-			         l_buf_counter
+			         (unsigned)l_buf_cache,
+			         (unsigned)l_buf_counter
 			        );
 		}
 		std::cout << ".";
