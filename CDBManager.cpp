@@ -370,8 +370,8 @@ void CFlyServerContext::send_syslog() const
 			         (unsigned)get_http_len(),
 				 (unsigned)get_delta_db(),
 			         m_user_agent.c_str(),
-			         (unsigned)l_buf_cache,
-			         (unsigned)l_buf_counter
+			         l_buf_cache,
+			         l_buf_counter
 			        );
 		}
 		std::cout << ".";
