@@ -36,6 +36,7 @@
 #define NO_CACHING
 #define NO_POPEN
 #define NO_NONCE_CHECK
+//#define NO_FILESYSTEMS TODO
 //[~] FlylinkDC++
 
 
@@ -360,8 +361,8 @@ struct mg_callbacks {
 	void (*init_context)(const struct mg_context *ctx);
 
 	/* Called when civetweb context is deleted.
-	   Parameters:
-	     ctx: context handle */
+	Parameters:
+	ctx: context handle */
 	void (*exit_context)(const struct mg_context *ctx);
 
 	/* Called when a new worker thread is initialized.

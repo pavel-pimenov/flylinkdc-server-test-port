@@ -141,6 +141,9 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 #define ALTERNATIVE_QUEUE
 #endif
 
+#if defined(NO_FILESYSTEMS) && !defined(NO_FILES)
+#error "Inconsistent build flags, NO_FILESYSTEMS requires NO_FILES"
+#endif
 
 /* DTL -- including winsock2.h works better if lean and mean */
 #if !defined(WIN32_LEAN_AND_MEAN)
@@ -159,6 +162,41 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 #define PATH_MAX FILENAME_MAX
 #endif /* __SYMBIAN32__ */
 
+#if defined(__ZEPHYR__)
+#include <time.h>
+
+#include <ctype.h>
+#include <net/socket.h>
+#include <posix/pthread.h>
+#include <posix/time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <zephyr.h>
+
+#include <fcntl.h>
+
+#include <libc_extensions.h>
+
+/* Max worker threads is the max of pthreads minus the main application thread
+ * and minus the main civetweb thread, thus -2
+ */
+#define MAX_WORKER_THREADS (CONFIG_MAX_PTHREAD_COUNT - 2)
+
+#if defined(USE_STACK_SIZE) && (USE_STACK_SIZE > 1)
+#define ZEPHYR_STACK_SIZE USE_STACK_SIZE
+#else
+#define ZEPHYR_STACK_SIZE 8096
+#endif
+
+K_THREAD_STACK_DEFINE(civetweb_main_stack, ZEPHYR_STACK_SIZE);
+K_THREAD_STACK_ARRAY_DEFINE(civetweb_worker_stacks,
+                            MAX_WORKER_THREADS,
+                            ZEPHYR_STACK_SIZE);
+
+static int zephyr_worker_stack_index;
+
+#endif
 
 #if !defined(CIVETWEB_HEADER_INCLUDED)
 /* Include the header file here, so the CivetWeb interface is defined for the
@@ -257,7 +295,7 @@ __cyg_profile_func_exit(void *this_fn, void *call_site)
 
 
 /* Some ANSI #includes are not available on Windows CE */
-#if !defined(_WIN32_WCE)
+#if !defined(_WIN32_WCE) && !defined(__ZEPHYR__)
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -372,16 +410,6 @@ _civet_safe_clock_gettime(int clk_id, struct timespec *t)
 #endif
 
 
-#include <ctype.h>
-#include <limits.h>
-#include <stdarg.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-
 /********************************************************************/
 /* CivetWeb configuration defines */
 /********************************************************************/
@@ -436,7 +464,11 @@ _civet_safe_clock_gettime(int clk_id, struct timespec *t)
 /********************************************************************/
 
 /* Helper makros */
+#if !defined(ARRAY_SIZE)
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof(array[0]))
+#endif
+
+#include <stdint.h>
 
 /* Standard defines */
 #if !defined(INT64_MAX)
@@ -453,7 +485,11 @@ mg_static_assert(MAX_WORKER_THREADS >= 1,
 mg_static_assert(sizeof(size_t) == 4 || sizeof(size_t) == 8,
                  "size_t data type size check");
 
+
 #if defined(_WIN32) /* WINDOWS include block */
+#include <malloc.h> /* *alloc( */
+#include <stdlib.h> /* *alloc( */
+#include <time.h>   /* struct timespec */
 #include <windows.h>
 #include <winsock2.h> /* DTL add for SO_EXCLUSIVE */
 #include <ws2tcpip.h>
@@ -760,33 +796,45 @@ struct mg_pollfd {
 
 #else /* defined(_WIN32) - WINDOWS vs UNIX include block */
 
-#include <arpa/inet.h>
 #include <inttypes.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <stdint.h>
-#include <sys/poll.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/utsname.h>
-#include <sys/wait.h>
+
 typedef const void *SOCK_OPT_TYPE;
 
 #if defined(ANDROID)
 typedef unsigned short int in_port_t;
 #endif
 
+#if !defined(__ZEPHYR__)
+#include <arpa/inet.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <grp.h>
+#include <limits.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <pthread.h>
 #include <pwd.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/poll.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+#endif
+
 #define vsnprintf_impl vsnprintf
 
 #if !defined(NO_SSL_DL) && !defined(NO_SSL)
 #include <dlfcn.h>
 #endif
-#include <pthread.h>
+
 #if defined(__MACH__)
 #define SSL_LIB "libssl.dylib"
 #define CRYPTO_LIB "libcrypto.dylib"
@@ -835,13 +883,6 @@ typedef int SOCKET;
 #define mg_pollfd pollfd
 
 #endif /* defined(_WIN32) - WINDOWS vs UNIX include block */
-
-/* Maximum queue length for pending connections. This value is passed as
- * parameter to the "listen" socket call. */
-#if !defined(SOMAXCONN)
-/* This symbol may be defined in winsock2.h so this must after that include */
-#define SOMAXCONN (100) /* in pending connections (count) */
-#endif
 
 /* In case our C library is missing "timegm", provide an implementation */
 #if defined(NEED_TIMEGM)
@@ -2318,6 +2359,7 @@ enum {
 	                     * socket option typedef TCP_NODELAY. */
 	MAX_REQUEST_SIZE,
 	LINGER_TIMEOUT,
+	MAX_CONNECTIONS,
 #if defined(__linux__)
 	ALLOW_SENDFILE_CALL,
 #endif
@@ -2422,6 +2464,7 @@ static const struct mg_option config_options[] = {
     {"tcp_nodelay", MG_CONFIG_TYPE_NUMBER, "0"},
     {"max_request_size", MG_CONFIG_TYPE_NUMBER, "16384"},
     {"linger_timeout_ms", MG_CONFIG_TYPE_NUMBER, NULL},
+    {"max_connections", MG_CONFIG_TYPE_NUMBER, "100"},
 #if defined(__linux__)
     {"allow_sendfile_call", MG_CONFIG_TYPE_BOOLEAN, "yes"},
 #endif
@@ -3156,6 +3199,7 @@ is_file_opened(const struct mg_file_access *fileacc)
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 static int mg_stat(const struct mg_connection *conn,
                    const char *path,
                    struct mg_file_stat *filep);
@@ -3269,6 +3313,7 @@ mg_fclose(struct mg_file_access *fileacc)
 	}
 	return ret;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 static void
@@ -3648,7 +3693,7 @@ static void mg_cry_internal_impl(const struct mg_connection *conn,
                                  const char *fmt,
                                  va_list ap);
 #include "external_mg_cry_internal_impl.inl"
-#else
+#elif !defined(NO_FILESYSTEMS)
 
 /* Print error message to the opened error log stream. */
 static void
@@ -3732,7 +3777,8 @@ mg_cry_internal_impl(const struct mg_connection *conn,
 		}
 	}
 }
-
+#else
+#error Must either enable filesystems or provide a custom mg_cry_internal_impl implementation
 #endif /* Externally provided function */
 
 
@@ -3763,7 +3809,7 @@ mg_cry_internal_wrap(const struct mg_connection *conn,
 		struct mg_connection fc;
 		mg_cry_internal_impl(fake_connection(&fc, ctx), func, line, fmt, ap);
 	} else {
-	mg_cry_internal_impl(conn, func, line, fmt, ap);
+		mg_cry_internal_impl(conn, func, line, fmt, ap);
 	}
 	va_end(ap);
 }
@@ -4351,9 +4397,11 @@ send_additional_header(struct mg_connection *conn)
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 static void handle_file_based_request(struct mg_connection *conn,
                                       const char *path,
                                       struct mg_file *filep);
+#endif /* NO_FILESYSTEMS */
 
 
 const char *
@@ -4562,14 +4610,17 @@ mg_send_http_error_impl(struct mg_connection *conn,
                         va_list args)
 {
 	char errmsg_buf[MG_BUF_LEN];
-	char path_buf[PATH_MAX];
 	va_list ap;
-	int len, i, page_handler_found, scope, truncated, has_body;
+	int has_body;
 	char date[64];
 	time_t curtime = time(NULL);
+#if !defined(NO_FILESYSTEMS)
+	char path_buf[PATH_MAX];
+	int len, i, page_handler_found, scope, truncated;
 	const char *error_handler = NULL;
 	struct mg_file error_page_file = STRUCT_FILE_INITIALIZER;
 	const char *error_page_file_ext, *tstr;
+#endif /* NO_FILESYSTEMS */
 	int handled_by_callback = 0;
 
 	const char *status_text = mg_get_response_code_text(conn, status);
@@ -4615,6 +4666,7 @@ mg_send_http_error_impl(struct mg_connection *conn,
 			DEBUG_TRACE(
 			    "Recursion when handling error %u - fall back to default",
 			    status);
+#if !defined(NO_FILESYSTEMS)
 		} else {
 			/* Send user defined error pages, if defined */
 			error_handler = conn->dom_ctx->config[ERROR_PAGES];
@@ -4697,6 +4749,7 @@ mg_send_http_error_impl(struct mg_connection *conn,
 				conn->in_error_handler = 0;
 				return 0;
 			}
+#endif /* NO_FILESYSTEMS */
 		}
 
 		/* No custom error page. Send default error page. */
@@ -4919,7 +4972,7 @@ static int
 pthread_mutex_lock(pthread_mutex_t *mutex)
 {
 	EnterCriticalSection(&mutex->sec);
-		return 0;
+	return 0;
 }
 
 
@@ -5210,6 +5263,7 @@ path_to_unicode(const struct mg_connection *conn,
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 static int
 mg_stat(const struct mg_connection *conn,
         const char *path,
@@ -5282,6 +5336,7 @@ mg_stat(const struct mg_connection *conn,
 
 	return 0;
 }
+#endif
 
 
 static int
@@ -5811,6 +5866,7 @@ set_non_blocking_mode(SOCKET sock)
 
 #else
 
+#if !defined(NO_FILESYSTEMS)
 static int
 mg_stat(const struct mg_connection *conn,
         const char *path,
@@ -5845,6 +5901,7 @@ mg_stat(const struct mg_connection *conn,
 
 	return 0;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 static void
@@ -5852,6 +5909,11 @@ set_close_on_exec(int fd,
                   const struct mg_connection *conn /* may be null */,
                   struct mg_context *ctx /* may be null */)
 {
+#if defined(__ZEPHYR__)
+	(void)fd;
+	(void)conn;
+	(void)ctx;
+#else
 	if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
 		if (conn || ctx) {
 			struct mg_connection fc;
@@ -5861,6 +5923,7 @@ set_close_on_exec(int fd,
 			                strerror(ERRNO));
 		}
 	}
+#endif
 }
 
 
@@ -5874,7 +5937,9 @@ mg_start_thread(mg_thread_func_t func, void *param)
 	(void)pthread_attr_init(&attr);
 	(void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-#if defined(USE_STACK_SIZE) && (USE_STACK_SIZE > 1)
+#if defined(__ZEPHYR__)
+	pthread_attr_setstack(&attr, &civetweb_main_stack, ZEPHYR_STACK_SIZE);
+#elif defined(USE_STACK_SIZE) && (USE_STACK_SIZE > 1)
 	/* Compile-time option to control stack size,
 	 * e.g. -DUSE_STACK_SIZE=16384 */
 	(void)pthread_attr_setstacksize(&attr, USE_STACK_SIZE);
@@ -5899,7 +5964,11 @@ mg_start_thread_with_id(mg_thread_func_t func,
 
 	(void)pthread_attr_init(&attr);
 
-#if defined(USE_STACK_SIZE) && (USE_STACK_SIZE > 1)
+#if defined(__ZEPHYR__)
+	pthread_attr_setstack(&attr,
+	                      &civetweb_worker_stacks[zephyr_worker_stack_index++],
+	                      ZEPHYR_STACK_SIZE);
+#elif defined(USE_STACK_SIZE) && (USE_STACK_SIZE > 1)
 	/* Compile-time option to control stack size,
 	 * e.g. -DUSE_STACK_SIZE=16384 */
 	(void)pthread_attr_setstacksize(&attr, USE_STACK_SIZE);
@@ -5947,7 +6016,7 @@ spawn_process(struct mg_connection *conn,
 	} else if (pid != 0) {
 		/* Make sure children close parent-side descriptors.
 		 * The caller will close the child-side immediately. */
-		set_close_on_exec(fdin[1], conn, NULL); /* stdin write */
+		set_close_on_exec(fdin[1], conn, NULL);  /* stdin write */
 		set_close_on_exec(fdout[0], conn, NULL); /* stdout read */
 		set_close_on_exec(fderr[0], conn, NULL); /* stderr read */
 	} else {
@@ -8021,6 +8090,7 @@ check_password(const char *method,
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 /* Use the global passwords file, if specified by auth_gpass option,
  * or search for .htpasswd in the requested directory. */
 static void
@@ -8094,6 +8164,7 @@ open_auth_file(struct mg_connection *conn,
 		}
 	}
 }
+#endif /* NO_FILESYSTEMS */
 
 
 /* Parsed Authorization header */
@@ -8267,6 +8338,7 @@ mg_fgets(char *buf, size_t size, struct mg_file *filep, char **p)
 #error Bad INITIAL_DEPTH for recursion, set to at least 1
 #endif
 
+#if !defined(NO_FILESYSTEMS)
 struct read_auth_file_struct {
 	struct mg_connection *conn;
 	struct ah ah;
@@ -8441,12 +8513,14 @@ mg_check_digest_access_authentication(struct mg_connection *conn,
 
 	return auth;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 /* Return 1 if request is authorised, 0 otherwise. */
 static int
 check_authorization(struct mg_connection *conn, const char *path)
 {
+#if !defined(NO_FILESYSTEMS)
 	char fname[PATH_MAX];
 	struct vec uri_vec, filename_vec;
 	const char *list;
@@ -8490,6 +8564,11 @@ check_authorization(struct mg_connection *conn, const char *path)
 	}
 
 	return authorized;
+#else
+	(void)conn;
+	(void)path;
+	return 1;
+#endif /* NO_FILESYSTEMS */
 }
 
 
@@ -9147,6 +9226,7 @@ must_hide_file(struct mg_connection *conn, const char *path)
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 static int
 scan_directory(struct mg_connection *conn,
                const char *dir,
@@ -9200,6 +9280,7 @@ scan_directory(struct mg_connection *conn,
 	}
 	return 1;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 #if !defined(NO_FILES)
@@ -9290,6 +9371,7 @@ realloc2(void *ptr, size_t size)
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 static int
 dir_scan_callback(struct de *de, void *data)
 {
@@ -9416,6 +9498,7 @@ handle_directory_request(struct mg_connection *conn, const char *dir)
 	mg_printf(conn, "%s", "</table></pre></body></html>");
 	conn->status_code = 200;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 /* Send len bytes from the opened file to the client. */
@@ -9577,6 +9660,7 @@ fclose_on_exec(struct mg_file_access *filep, struct mg_connection *conn)
 #endif
 
 
+#if !defined(NO_FILESYSTEMS)
 static void
 handle_static_file_request(struct mg_connection *conn,
                            const char *path,
@@ -9847,6 +9931,7 @@ mg_send_file_body(struct mg_connection *conn, const char *path)
 	(void)mg_fclose(&file.access); /* Ignore errors for readonly files */
 	return 0;                      /* >= 0 for OK */
 }
+#endif /* NO_FILESYSTEMS */
 
 
 #if !defined(NO_CACHING)
@@ -9900,6 +9985,7 @@ handle_not_modified_static_file_request(struct mg_connection *conn,
 #endif
 
 
+#if !defined(NO_FILESYSTEMS)
 void
 mg_send_file(struct mg_connection *conn, const char *path)
 {
@@ -10063,6 +10149,7 @@ mg_store_body(struct mg_connection *conn, const char *path)
 
 	return len;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 /* Parse a buffer:
@@ -10122,6 +10209,8 @@ parse_http_headers(char **buf, struct mg_header hdr[MG_MAX_HEADERS])
 
 	for (i = 0; i < (int)MG_MAX_HEADERS; i++) {
 		char *dp = *buf;
+
+		/* Skip all ASCII characters (>SPACE, <127), to find a ':' */
 		while ((*dp != ':') && (*dp >= 33) && (*dp <= 126)) {
 			dp++;
 		}
@@ -10138,29 +10227,45 @@ parse_http_headers(char **buf, struct mg_header hdr[MG_MAX_HEADERS])
 		/* Truncate here and set the key name */
 		*dp = 0;
 		hdr[i].name = *buf;
+
+		/* Skip all spaces */
 		do {
 			dp++;
-		} while (*dp == ' ');
+		} while ((*dp == ' ') || (*dp == '\t'));
 
 		/* The rest of the line is the value */
 		hdr[i].value = dp;
-		*buf = dp + strcspn(dp, "\r\n");
-		if (((*buf)[0] != '\r') || ((*buf)[1] != '\n')) {
-			*buf = NULL;
+
+		/* Find end of line */
+		while ((*dp != 0) && (*dp != '\r') && (*dp != '\n')) {
+			dp++;
+		};
+
+		/* eliminate \r */
+		if (*dp == '\r') {
+			*dp = 0;
+			dp++;
+			if (*dp != '\n') {
+				/* This is not a valid line. */
+				return -1;
+			}
 		}
 
+		/* here *dp is either 0 or '\n' */
+		/* in any case, we have a new header */
 		num_headers = i + 1;
-		if (*buf) {
-			(*buf)[0] = 0;
-			(*buf)[1] = 0;
-			*buf += 2;
+
+		if (*dp) {
+			*dp = 0;
+			dp++;
+			*buf = dp;
+
+			if ((dp[0] == '\r') || (dp[0] == '\n')) {
+				/* This is the end of the header */
+				break;
+			}
 		} else {
 			*buf = dp;
-			break;
-		}
-
-		if ((*buf)[0] == '\r') {
-			/* This is the end of the header */
 			break;
 		}
 	}
@@ -10560,10 +10665,7 @@ forward_body_data(struct mg_connection *conn, FILE *fp, SOCKET sock, SSL *ssl)
 	if ((expect != NULL) && (mg_strcasecmp(expect, "100-continue") != 0)) {
 		/* Client sent an "Expect: xyz" header and xyz is not 100-continue.
 		 */
-		mg_send_http_error(conn,
-		                   417,
-		                   "Error: Can not fulfill expectation %s",
-		                   expect);
+		mg_send_http_error(conn, 417, "Error: Can not fulfill expectation");
 	} else {
 		if (expect != NULL) {
 			(void)mg_printf(conn, "%s", "HTTP/1.1 100 Continue\r\n\r\n");
@@ -10586,8 +10688,8 @@ forward_body_data(struct mg_connection *conn, FILE *fp, SOCKET sock, SSL *ssl)
 				break;
 			}
 			if (push_all(conn->phys_ctx, fp, sock, ssl, buf, nread) != nread) {
-					break;
-				}
+				break;
+			}
 		}
 
 		/* Each error code path in this function must send an error */
@@ -11208,6 +11310,9 @@ handle_cgi_request(struct mg_connection *conn, const char *prog)
 
 	/* Send headers */
 	for (i = 0; i < ri.num_headers; i++) {
+		DEBUG_TRACE("CGI header: %s: %s",
+		            ri.http_headers[i].name,
+		            ri.http_headers[i].value);
 		mg_printf(conn,
 		          "%s: %s\r\n",
 		          ri.http_headers[i].name,
@@ -11555,6 +11660,7 @@ delete_file(struct mg_connection *conn, const char *path)
 #endif /* !NO_FILES */
 
 
+#if !defined(NO_FILESYSTEMS)
 static void
 send_ssi_file(struct mg_connection *, const char *, struct mg_file *, int);
 
@@ -11851,6 +11957,7 @@ handle_ssi_file_request(struct mg_connection *conn,
 		(void)mg_fclose(&filep->access); /* Ignore errors for readonly files */
 	}
 }
+#endif /* NO_FILESYSTEMS */
 
 
 #if !defined(NO_FILES)
@@ -12789,6 +12896,7 @@ is_websocket_protocol(const struct mg_connection *conn)
 		           * fields
 		           */
 	}
+	DEBUG_TRACE("Upgrade: %s", upgrade);
 	if (!mg_strcasestr(upgrade, "websocket")) {
 		return 0;
 	}
@@ -13299,14 +13407,14 @@ mg_set_handler_type(struct mg_context *phys_ctx,
 	}
 
 	tmp_rh =
-	    (struct mg_handler_info *)mg_calloc_ctx(sizeof(struct mg_handler_info),
-	                                            1,
+	    (struct mg_handler_info *)mg_calloc_ctx(1,
+	                                            sizeof(struct mg_handler_info),
 	                                            phys_ctx);
 	if (tmp_rh == NULL) {
 		mg_unlock_context(phys_ctx);
 		mg_cry_ctx_internal(phys_ctx,
-		                "%s",
-		                "Cannot create new request handler struct, OOM");
+		                    "%s",
+		                    "Cannot create new request handler struct, OOM");
 		return;
 	}
 	tmp_rh->uri = mg_strdup_ctx(uri, phys_ctx);
@@ -13314,8 +13422,8 @@ mg_set_handler_type(struct mg_context *phys_ctx,
 		mg_unlock_context(phys_ctx);
 		mg_free(tmp_rh);
 		mg_cry_ctx_internal(phys_ctx,
-		                "%s",
-		                "Cannot create new request handler struct, OOM");
+		                    "%s",
+		                    "Cannot create new request handler struct, OOM");
 		return;
 	}
 	tmp_rh->uri_len = urilen;
@@ -14118,6 +14226,7 @@ handle_request(struct mg_connection *conn)
 }
 
 
+#if !defined(NO_FILESYSTEMS)
 static void
 handle_file_based_request(struct mg_connection *conn,
                           const char *path,
@@ -14208,6 +14317,7 @@ handle_file_based_request(struct mg_connection *conn,
 		handle_static_file_request(conn, path, file, NULL, NULL);
 	}
 }
+#endif /* NO_FILESYSTEMS */
 
 
 static void
@@ -14249,6 +14359,7 @@ parse_port_string(const struct vec *vec, struct socket *so, int *ip_version)
 	unsigned int a, b, c, d, port;
 	int ch, len;
 	const char *cb;
+	char *endptr;
 #if defined(USE_IPV6)
 	char buf[100] = {0};
 #endif
@@ -14302,7 +14413,9 @@ parse_port_string(const struct vec *vec, struct socket *so, int *ip_version)
 		*ip_version = 4;
 #endif
 
-	} else if (sscanf(vec->ptr, "%u%n", &port, &len) == 1) {
+	} else if (is_valid_port(port = strtoul(vec->ptr, &endptr, 0))
+	           && vec->ptr != endptr) {
+		len = endptr - vec->ptr;
 		/* If only port is specified, bind to IPv4, INADDR_ANY */
 		so->lsa.sin.sin_port = htons((uint16_t)port);
 		*ip_version = 4;
@@ -14461,6 +14574,9 @@ set_ports_option(struct mg_context *phys_ctx)
 	int portsTotal = 0;
 	int portsOk = 0;
 
+	const char *opt_txt;
+	long opt_max_connections;
+
 	if (!phys_ctx) {
 		return 0;
 	}
@@ -14489,8 +14605,8 @@ set_ports_option(struct mg_context *phys_ctx)
 		if (so.is_ssl && phys_ctx->dd.ssl_ctx == NULL) {
 
 			mg_cry_ctx_internal(phys_ctx,
-			                "Cannot add SSL socket (entry %i)",
-			                portsTotal);
+			                    "Cannot add SSL socket (entry %i)",
+			                    portsTotal);
 			continue;
 		}
 #endif
@@ -14499,8 +14615,8 @@ set_ports_option(struct mg_context *phys_ctx)
 		    == INVALID_SOCKET) {
 
 			mg_cry_ctx_internal(phys_ctx,
-			                "cannot create socket (entry %i)",
-			                portsTotal);
+			                    "cannot create socket (entry %i)",
+			                    portsTotal);
 			continue;
 		}
 
@@ -14537,9 +14653,9 @@ set_ports_option(struct mg_context *phys_ctx)
 
 			/* Set reuse option, but don't abort on errors. */
 			mg_cry_ctx_internal(
-				phys_ctx,
-			                "cannot set socket option SO_REUSEADDR (entry %i)",
-			                portsTotal);
+			    phys_ctx,
+			    "cannot set socket option SO_REUSEADDR (entry %i)",
+			    portsTotal);
 		}
 #endif
 
@@ -14590,11 +14706,11 @@ set_ports_option(struct mg_context *phys_ctx)
 			len = sizeof(so.lsa.sin);
 			if (bind(so.sock, &so.lsa.sa, len) != 0) {
 				mg_cry_ctx_internal(phys_ctx,
-				                "cannot bind to %.*s: %d (%s)",
-				                (int)vec.len,
-				                vec.ptr,
-				                (int)ERRNO,
-				                strerror(errno));
+				                    "cannot bind to %.*s: %d (%s)",
+				                    (int)vec.len,
+				                    vec.ptr,
+				                    (int)ERRNO,
+				                    strerror(errno));
 				closesocket(so.sock);
 				so.sock = INVALID_SOCKET;
 				continue;
@@ -14606,11 +14722,11 @@ set_ports_option(struct mg_context *phys_ctx)
 			len = sizeof(so.lsa.sin6);
 			if (bind(so.sock, &so.lsa.sa, len) != 0) {
 				mg_cry_ctx_internal(phys_ctx,
-				                "cannot bind to IPv6 %.*s: %d (%s)",
-				                (int)vec.len,
-				                vec.ptr,
-				                (int)ERRNO,
-				                strerror(errno));
+				                    "cannot bind to IPv6 %.*s: %d (%s)",
+				                    (int)vec.len,
+				                    vec.ptr,
+				                    (int)ERRNO,
+				                    strerror(errno));
 				closesocket(so.sock);
 				so.sock = INVALID_SOCKET;
 				continue;
@@ -14627,14 +14743,23 @@ set_ports_option(struct mg_context *phys_ctx)
 			continue;
 		}
 
-		if (listen(so.sock, SOMAXCONN) != 0) {
+		opt_txt = phys_ctx->dd.config[MAX_CONNECTIONS];
+		opt_max_connections = strtol(opt_txt, NULL, 10);
+		if ((opt_max_connections > INT_MAX) || (opt_max_connections < 1)) {
+			mg_cry_ctx_internal(phys_ctx,
+			                    "max_connections value \"%s\" is invalid",
+			                    opt_txt);
+			continue;
+		}
+
+		if (listen(so.sock, (int)opt_max_connections) != 0) {
 
 			mg_cry_ctx_internal(phys_ctx,
-			                "cannot listen to %.*s: %d (%s)",
-			                (int)vec.len,
-			                vec.ptr,
-			                (int)ERRNO,
-			                strerror(errno));
+			                    "cannot listen to %.*s: %d (%s)",
+			                    (int)vec.len,
+			                    vec.ptr,
+			                    (int)ERRNO,
+			                    strerror(errno));
 			closesocket(so.sock);
 			so.sock = INVALID_SOCKET;
 			continue;
@@ -14645,11 +14770,11 @@ set_ports_option(struct mg_context *phys_ctx)
 
 			int err = (int)ERRNO;
 			mg_cry_ctx_internal(phys_ctx,
-			                "call to getsockname failed %.*s: %d (%s)",
-			                (int)vec.len,
-			                vec.ptr,
-			                err,
-			                strerror(errno));
+			                    "call to getsockname failed %.*s: %d (%s)",
+			                    (int)vec.len,
+			                    vec.ptr,
+			                    err,
+			                    strerror(errno));
 			closesocket(so.sock);
 			so.sock = INVALID_SOCKET;
 			continue;
@@ -14725,7 +14850,7 @@ header_val(const struct mg_connection *conn, const char *header)
 #if defined(MG_EXTERNAL_FUNCTION_log_access)
 static void log_access(const struct mg_connection *conn);
 #include "external_log_access.inl"
-#else
+#elif !defined(NO_FILESYSTEMS)
 
 static void
 log_access(const struct mg_connection *conn)
@@ -14819,7 +14944,8 @@ log_access(const struct mg_connection *conn)
 		}
 	}
 }
-
+#else
+#error Must either enable filesystems or provide a custom log_access implementation
 #endif /* Externally provided function */
 
 
@@ -14844,8 +14970,8 @@ check_acl(struct mg_context *phys_ctx, uint32_t remote_ip)
 			if ((flag != '+' && flag != '-')
 			    || (parse_net(&vec.ptr[1], &net, &mask) == 0)) {
 				mg_cry_ctx_internal(phys_ctx,
-				                "%s: subnet must be [+|-]x.x.x.x[/x]",
-				                __func__);
+				                    "%s: subnet must be [+|-]x.x.x.x[/x]",
+				                    __func__);
 				return -1;
 			}
 
@@ -14860,7 +14986,7 @@ check_acl(struct mg_context *phys_ctx, uint32_t remote_ip)
 }
 
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__ZEPHYR__)
 static int
 set_uid_option(struct mg_context *phys_ctx)
 {
@@ -14877,9 +15003,9 @@ set_uid_option(struct mg_context *phys_ctx)
 			/* run_as_user does not exist on the system. We can't proceed
 			 * further. */
 			mg_cry_ctx_internal(phys_ctx,
-			                "%s: unknown user [%s]",
-			                __func__,
-			                run_as_user);
+			                    "%s: unknown user [%s]",
+			                    __func__,
+			                    run_as_user);
 		} else if (run_as_user == NULL || curr_uid == to_pw->pw_uid) {
 			/* There was either no request to change user, or we're already
 			 * running as run_as_user. Nothing else to do.
@@ -14889,21 +15015,21 @@ set_uid_option(struct mg_context *phys_ctx)
 			/* Valid change request.  */
 			if (setgid(to_pw->pw_gid) == -1) {
 				mg_cry_ctx_internal(phys_ctx,
-				                "%s: setgid(%s): %s",
-				                __func__,
-				                run_as_user,
-				                strerror(errno));
+				                    "%s: setgid(%s): %s",
+				                    __func__,
+				                    run_as_user,
+				                    strerror(errno));
 			} else if (setgroups(0, NULL) == -1) {
 				mg_cry_ctx_internal(phys_ctx,
-				                "%s: setgroups(): %s",
-				                __func__,
-				                strerror(errno));
+				                    "%s: setgroups(): %s",
+				                    __func__,
+				                    strerror(errno));
 			} else if (setuid(to_pw->pw_uid) == -1) {
 				mg_cry_ctx_internal(phys_ctx,
-				                "%s: setuid(%s): %s",
-				                __func__,
-				                run_as_user,
-				                strerror(errno));
+				                    "%s: setuid(%s): %s",
+				                    __func__,
+				                    run_as_user,
+				                    strerror(errno));
 			} else {
 				success = 1;
 			}
@@ -15106,12 +15232,18 @@ sslize(struct mg_connection *conn,
 					 * See https://linux.die.net/man/3/ssl_get_error
 					 * This is typical for non-blocking sockets. */
 					struct mg_pollfd pfd;
+					int pollres;
 					pfd.fd = conn->client.sock;
 					pfd.events = ((err == SSL_ERROR_WANT_CONNECT)
 					              || (err == SSL_ERROR_WANT_WRITE))
 					                 ? POLLOUT
 					                 : POLLIN;
-					mg_poll(&pfd, 1, 50, stop_server);
+					pollres = mg_poll(&pfd, 1, 50, stop_server);
+					if (pollres < 0) {
+						/* Break if error occured (-1)
+						 * or server shutdown (-2) */
+						break;
+					}
 				}
 
 			} else if (err == SSL_ERROR_SYSCALL) {
@@ -15520,28 +15652,28 @@ ssl_use_pem_file(struct mg_context *phys_ctx,
 {
 	if (SSL_CTX_use_certificate_file(dom_ctx->ssl_ctx, pem, 1) == 0) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "%s: cannot open certificate file %s: %s",
-		                __func__,
-		                pem,
-		                ssl_error());
+		                    "%s: cannot open certificate file %s: %s",
+		                    __func__,
+		                    pem,
+		                    ssl_error());
 		return 0;
 	}
 
 	/* could use SSL_CTX_set_default_passwd_cb_userdata */
 	if (SSL_CTX_use_PrivateKey_file(dom_ctx->ssl_ctx, pem, 1) == 0) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "%s: cannot open private key file %s: %s",
-		                __func__,
-		                pem,
-		                ssl_error());
+		                    "%s: cannot open private key file %s: %s",
+		                    __func__,
+		                    pem,
+		                    ssl_error());
 		return 0;
 	}
 
 	if (SSL_CTX_check_private_key(dom_ctx->ssl_ctx) == 0) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "%s: certificate and private key do not match: %s",
-		                __func__,
-		                pem);
+		                    "%s: certificate and private key do not match: %s",
+		                    __func__,
+		                    pem);
 		return 0;
 	}
 
@@ -15556,10 +15688,10 @@ ssl_use_pem_file(struct mg_context *phys_ctx,
 	if (chain) {
 		if (SSL_CTX_use_certificate_chain_file(dom_ctx->ssl_ctx, chain) == 0) {
 			mg_cry_ctx_internal(phys_ctx,
-			                "%s: cannot use certificate chain file %s: %s",
-			                __func__,
+			                    "%s: cannot use certificate chain file %s: %s",
+			                    __func__,
 			                    chain,
-			                ssl_error());
+			                    ssl_error());
 			return 0;
 		}
 	}
@@ -15725,15 +15857,15 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 #if defined(OPENSSL_API_1_1)
 	if ((dom_ctx->ssl_ctx = SSL_CTX_new(TLS_server_method())) == NULL) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "SSL_CTX_new (server) error: %s",
-		                ssl_error());
+		                    "SSL_CTX_new (server) error: %s",
+		                    ssl_error());
 		return 0;
 	}
 #else
 	if ((dom_ctx->ssl_ctx = SSL_CTX_new(SSLv23_server_method())) == NULL) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "SSL_CTX_new (server) error: %s",
-		                ssl_error());
+		                    "SSL_CTX_new (server) error: %s",
+		                    ssl_error());
 		return 0;
 	}
 #endif /* OPENSSL_API_1_1 */
@@ -15787,8 +15919,8 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 	 * If it returns -1, initializing ssl fails. */
 	if (callback_ret < 0) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "SSL callback returned error: %i",
-		                callback_ret);
+		                    "SSL callback returned error: %i",
+		                    callback_ret);
 		return 0;
 	}
 	if (callback_ret > 0) {
@@ -15850,12 +15982,12 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 		if (SSL_CTX_load_verify_locations(dom_ctx->ssl_ctx, ca_file, ca_path)
 		    != 1) {
 			mg_cry_ctx_internal(phys_ctx,
-			                "SSL_CTX_load_verify_locations error: %s "
-			                "ssl_verify_peer requires setting "
-			                "either ssl_ca_path or ssl_ca_file. "
-			                "Is any of them present in the "
-			                ".conf file?",
-			                ssl_error());
+			                    "SSL_CTX_load_verify_locations error: %s "
+			                    "ssl_verify_peer requires setting "
+			                    "either ssl_ca_path or ssl_ca_file. "
+			                    "Is any of them present in the "
+			                    ".conf file?",
+			                    ssl_error());
 			return 0;
 		}
 
@@ -15871,8 +16003,8 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 		if (use_default_verify_paths
 		    && (SSL_CTX_set_default_verify_paths(dom_ctx->ssl_ctx) != 1)) {
 			mg_cry_ctx_internal(phys_ctx,
-			                "SSL_CTX_set_default_verify_paths error: %s",
-			                ssl_error());
+			                    "SSL_CTX_set_default_verify_paths error: %s",
+			                    ssl_error());
 			return 0;
 		}
 
@@ -15887,8 +16019,8 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 		                            dom_ctx->config[SSL_CIPHER_LIST])
 		    != 1) {
 			mg_cry_ctx_internal(phys_ctx,
-			                "SSL_CTX_set_cipher_list error: %s",
-			                ssl_error());
+			                    "SSL_CTX_set_cipher_list error: %s",
+			                    ssl_error());
 		}
 	}
 
@@ -15930,8 +16062,8 @@ init_ssl_ctx(struct mg_context *phys_ctx, struct mg_domain_context *dom_ctx)
 
 	if (callback_ret < 0) {
 		mg_cry_ctx_internal(phys_ctx,
-		                "external_ssl_ctx callback returned error: %i",
-		                callback_ret);
+		                    "external_ssl_ctx callback returned error: %i",
+		                    callback_ret);
 		return 0;
 	} else if (callback_ret > 0) {
 		dom_ctx->ssl_ctx = (SSL_CTX *)ssl_ctx;
@@ -15952,8 +16084,8 @@ init_ssl_ctx(struct mg_context *phys_ctx, struct mg_domain_context *dom_ctx)
 		 * Essential data to set up TLS is missing.
 		 */
 		mg_cry_ctx_internal(phys_ctx,
-		                "Initializing SSL failed: -%s is not set",
-		                config_options[SSL_CERTIFICATE].name);
+		                    "Initializing SSL failed: -%s is not set",
+		                    config_options[SSL_CERTIFICATE].name);
 		return 0;
 	}
 
@@ -16015,6 +16147,7 @@ uninitialize_ssl(void)
 #endif /* !NO_SSL */
 
 
+#if !defined(NO_FILESYSTEMS)
 static int
 set_gpass_option(struct mg_context *phys_ctx, struct mg_domain_context *dom_ctx)
 {
@@ -16029,15 +16162,16 @@ set_gpass_option(struct mg_context *phys_ctx, struct mg_domain_context *dom_ctx)
 		if ((path != NULL)
 		    && !mg_stat(fake_connection(&fc, phys_ctx), path, &file.stat)) {
 			mg_cry_ctx_internal(phys_ctx,
-			                "Cannot open %s: %s",
-			                path,
-			                strerror(ERRNO));
+			                    "Cannot open %s: %s",
+			                    path,
+			                    strerror(ERRNO));
 			return 0;
 		}
 		return 1;
 	}
 	return 0;
 }
+#endif /* NO_FILESYSTEMS */
 
 
 static int
@@ -16102,6 +16236,7 @@ set_tcp_nodelay(SOCKET sock, int nodelay_on)
 }
 
 
+#if !defined(__ZEPHYR__)
 static void
 close_socket_gracefully(struct mg_connection *conn)
 {
@@ -16224,6 +16359,7 @@ close_socket_gracefully(struct mg_connection *conn)
 	closesocket(conn->client.sock);
 	conn->client.sock = INVALID_SOCKET;
 }
+#endif
 
 
 static void
@@ -16273,7 +16409,11 @@ close_connection(struct mg_connection *conn)
 	}
 #endif
 	if (conn->client.sock != INVALID_SOCKET) {
+#if defined(__ZEPHYR__)
+		closesocket(conn->client.sock);
+#else
 		close_socket_gracefully(conn);
+#endif
 		conn->client.sock = INVALID_SOCKET;
 	}
 
@@ -16439,7 +16579,7 @@ mg_connect_client_impl(const struct mg_client_options *client_options,
 		            ebuf,
 		            ebuf_len,
 		            "SSL_CTX_new error: %s",
-			    ssl_error());
+		            ssl_error());
 		closesocket(sock);
 		mg_free(conn);
 		return NULL;
@@ -16513,9 +16653,9 @@ mg_connect_client_impl(const struct mg_client_options *client_options,
 
 		if (client_options->server_cert) {
 			if (SSL_CTX_load_verify_locations(conn->dom_ctx->ssl_ctx,
-			                              client_options->server_cert,
+			                                  client_options->server_cert,
 			                                  NULL)
-				!= 1) {
+			    != 1) {
 				mg_cry_internal(conn,
 				                "SSL_CTX_load_verify_locations error: %s ",
 				                ssl_error());
@@ -16915,7 +17055,7 @@ get_request(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 	}
 
 	if (((cl = get_header(conn->request_info.http_headers,
-	                     conn->request_info.num_headers,
+	                      conn->request_info.num_headers,
 	                      "Transfer-Encoding"))
 	     != NULL)
 	    && mg_strcasecmp(cl, "identity")) {
@@ -16950,7 +17090,7 @@ get_request(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 		}
 		/* Publish the content length back to the request info. */
 		conn->request_info.content_length = conn->content_len;
-		} else {
+	} else {
 		/* There is no exception, see RFC7230. */
 		conn->content_len = 0;
 	}
@@ -16984,10 +17124,10 @@ get_response(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 	/* Message is a valid response */
 
 	if (((cl = get_header(conn->response_info.http_headers,
-	                     conn->response_info.num_headers,
+	                      conn->response_info.num_headers,
 	                      "Transfer-Encoding"))
 	     != NULL)
-	     && mg_strcasecmp(cl, "identity")) {
+	    && mg_strcasecmp(cl, "identity")) {
 		if (mg_strcasecmp(cl, "chunked")) {
 			mg_snprintf(conn,
 			            NULL, /* No truncation check for ebuf */
@@ -16999,7 +17139,7 @@ get_response(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 			return 0;
 		}
 		conn->is_chunked = 1;
-		conn->content_len = 0;  /* not yet read */
+		conn->content_len = 0; /* not yet read */
 	} else if ((cl = get_header(conn->response_info.http_headers,
 	                            conn->response_info.num_headers,
 	                            "Content-Length"))
@@ -17033,9 +17173,9 @@ get_response(struct mg_connection *conn, char *ebuf, size_t ebuf_len, int *err)
 		    || (conn->response_info.status_code == 204)
 		    || (conn->response_info.status_code == 304)) {
 			conn->content_len = 0;
-	} else {
-		conn->content_len = -1; /* unknown content length */
-	}
+		} else {
+			conn->content_len = -1; /* unknown content length */
+		}
 	}
 
 	conn->connection_type = CONNECTION_TYPE_RESPONSE; /* Valid response */
@@ -17567,13 +17707,13 @@ process_new_connection(struct mg_connection *conn)
 		                             <= conn->data_len))));
 
 		if (keep_alive) {
-		/* Discard all buffered data for this request */
+			/* Discard all buffered data for this request */
 			discard_len =
 			    ((conn->request_len + conn->content_len) < conn->data_len)
-		                  ? (int)(conn->request_len + conn->content_len)
-		                  : conn->data_len;
-		conn->data_len -= discard_len;
-		if (conn->data_len > 0) {
+			        ? (int)(conn->request_len + conn->content_len)
+			        : conn->data_len;
+			conn->data_len -= discard_len;
+			if (conn->data_len > 0) {
 				DEBUG_TRACE("discard_len = %d", discard_len);
 				memmove(conn->buf,
 				        conn->buf + discard_len,
@@ -17779,8 +17919,8 @@ worker_thread_run(struct mg_connection *conn)
 	if ((thread_index < 0)
 	    || ((unsigned)thread_index >= (unsigned)ctx->cfg_worker_threads)) {
 		mg_cry_ctx_internal(ctx,
-		                "Internal error: Invalid worker index %i",
-		                thread_index);
+		                    "Internal error: Invalid worker index %i",
+		                    thread_index);
 		return;
 	}
 
@@ -17790,9 +17930,9 @@ worker_thread_run(struct mg_connection *conn)
 	conn->buf = (char *)mg_malloc_ctx(ctx->max_request_size, conn->phys_ctx);
 	if (conn->buf == NULL) {
 		mg_cry_ctx_internal(
-			ctx,
-		                "Out of memory: Cannot allocate buffer for worker %i",
-		                thread_index);
+		    ctx,
+		    "Out of memory: Cannot allocate buffer for worker %i",
+		    thread_index);
 		return;
 	}
 	conn->buf_size = (int)ctx->max_request_size;
@@ -17930,12 +18070,14 @@ static unsigned __stdcall worker_thread(void *thread_func_param)
 static void *
 worker_thread(void *thread_func_param)
 {
+#if !defined(__ZEPHYR__)
 	struct sigaction sa;
 
 	/* Ignore SIGPIPE */
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = SIG_IGN;
 	sigaction(SIGPIPE, &sa, NULL);
+#endif
 
 	worker_thread_run((struct mg_connection *)thread_func_param);
 	return NULL;
@@ -17951,16 +18093,18 @@ accept_new_connection(const struct socket *listener, struct mg_context *ctx)
 	struct socket so;
 	char src_addr[IP_ADDR_STR_LEN];
 	socklen_t len = sizeof(so.rsa);
+#if !defined(__ZEPHYR__)
 	int on = 1;
+#endif
 
 	if ((so.sock = accept(listener->sock, &so.rsa.sa, &len))
 	    == INVALID_SOCKET) {
 	} else if (!check_acl(ctx, ntohl(*(uint32_t *)&so.rsa.sin.sin_addr))) {
 		sockaddr_to_string(src_addr, sizeof(src_addr), &so.rsa);
 		mg_cry_ctx_internal(ctx,
-		                "%s: %s is not allowed to connect",
-		                __func__,
-		                src_addr);
+		                    "%s: %s is not allowed to connect",
+		                    __func__,
+		                    src_addr);
 		closesocket(so.sock);
 	} else {
 		/* Put so socket structure into the queue */
@@ -17970,11 +18114,12 @@ accept_new_connection(const struct socket *listener, struct mg_context *ctx)
 		so.ssl_redir = listener->ssl_redir;
 		if (getsockname(so.sock, &so.lsa.sa, &len) != 0) {
 			mg_cry_ctx_internal(ctx,
-			                "%s: getsockname() failed: %s",
-			                __func__,
-			                strerror(ERRNO));
+			                    "%s: getsockname() failed: %s",
+			                    __func__,
+			                    strerror(ERRNO));
 		}
 
+#if !defined(__ZEPHYR__)
 		/* Set TCP keep-alive. This is needed because if HTTP-level
 		 * keep-alive
 		 * is enabled, and client resets the connection, server won't get
@@ -17994,6 +18139,7 @@ accept_new_connection(const struct socket *listener, struct mg_context *ctx)
 			    __func__,
 			    strerror(ERRNO));
 		}
+#endif
 
 		/* Disable TCP Nagle's algorithm. Normally TCP packets are coalesced
 		 * to effectively fill up the underlying IP packet payload and
@@ -18163,12 +18309,14 @@ static unsigned __stdcall master_thread(void *thread_func_param)
 static void *
 master_thread(void *thread_func_param)
 {
+#if !defined(__ZEPHYR__)
 	struct sigaction sa;
 
 	/* Ignore SIGPIPE */
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = SIG_IGN;
 	sigaction(SIGPIPE, &sa, NULL);
+#endif
 
 	master_thread_run((struct mg_context *)thread_func_param);
 	return NULL;
@@ -18342,6 +18490,8 @@ get_system_name(char **sysName)
 #else
 	*sysName = mg_strdup("Symbian");
 #endif
+#elif defined(__ZEPHYR__)
+	*sysName = mg_strdup("Zephyr OS");
 #else
 	struct utsname name;
 	memset(&name, 0, sizeof(name));
@@ -18424,8 +18574,8 @@ mg_start(const struct mg_callbacks *callbacks,
 		/* Fatal error - abort start. However, this situation should never
 		 * occur in practice. */
 		mg_cry_ctx_internal(ctx,
-		                "%s",
-		                "Cannot initialize thread synchronization objects");
+		                    "%s",
+		                    "Cannot initialize thread synchronization objects");
 		mg_free(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18549,12 +18699,15 @@ mg_start(const struct mg_callbacks *callbacks,
 
 	/* NOTE(lsm): order is important here. SSL certificates must
 	 * be initialized before listening ports. UID must be set last. */
-	if (!set_gpass_option(ctx, NULL) ||
+	if (
+#if !defined(NO_FILESYSTEMS)
+	    !set_gpass_option(ctx, NULL) ||
+#endif
 #if !defined(NO_SSL)
 	    !init_ssl_ctx(ctx, NULL) ||
 #endif
 	    !set_ports_option(ctx) ||
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__ZEPHYR__)
 	    !set_uid_option(ctx) ||
 #endif
 	    !set_acl_option(ctx)) {
@@ -18570,8 +18723,8 @@ mg_start(const struct mg_callbacks *callbacks,
 
 	if (ctx->worker_threadids == NULL) {
 		mg_cry_ctx_internal(ctx,
-		                "%s",
-		                "Not enough memory for worker thread ID array");
+		                    "%s",
+		                    "Not enough memory for worker thread ID array");
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18591,13 +18744,13 @@ mg_start(const struct mg_callbacks *callbacks,
 
 #if defined(ALTERNATIVE_QUEUE)
 	ctx->client_wait_events =
-	    (void **)mg_calloc_ctx(sizeof(ctx->client_wait_events[0]),
-	                           ctx->cfg_worker_threads,
+	    (void **)mg_calloc_ctx(ctx->cfg_worker_threads,
+	                           sizeof(ctx->client_wait_events[0]),
 	                           ctx);
 	if (ctx->client_wait_events == NULL) {
 		mg_cry_ctx_internal(ctx,
-		                "%s",
-		                "Not enough memory for worker event array");
+		                    "%s",
+		                    "Not enough memory for worker event array");
 		mg_free(ctx->worker_threadids);
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
@@ -18605,13 +18758,13 @@ mg_start(const struct mg_callbacks *callbacks,
 	}
 
 	ctx->client_socks =
-	    (struct socket *)mg_calloc_ctx(sizeof(ctx->client_socks[0]),
-	                                   ctx->cfg_worker_threads,
+	    (struct socket *)mg_calloc_ctx(ctx->cfg_worker_threads,
+	                                   sizeof(ctx->client_socks[0]),
 	                                   ctx);
 	if (ctx->client_socks == NULL) {
 		mg_cry_ctx_internal(ctx,
-		                "%s",
-		                "Not enough memory for worker socket array");
+		                    "%s",
+		                    "Not enough memory for worker socket array");
 		mg_free(ctx->client_wait_events);
 		mg_free(ctx->worker_threadids);
 		free_context(ctx);
@@ -18669,13 +18822,13 @@ mg_start(const struct mg_callbacks *callbacks,
 			/* thread was not created */
 			if (i > 0) {
 				mg_cry_ctx_internal(ctx,
-				                "Cannot start worker thread %i: error %ld",
-				                i + 1,
-				                (long)ERRNO);
+				                    "Cannot start worker thread %i: error %ld",
+				                    i + 1,
+				                    (long)ERRNO);
 			} else {
 				mg_cry_ctx_internal(ctx,
-				                "Cannot create threads: error %ld",
-				                (long)ERRNO);
+				                    "Cannot create threads: error %ld",
+				                    (long)ERRNO);
 				free_context(ctx);
 				pthread_setspecific(sTlsKey, NULL);
 				return NULL;
@@ -18775,8 +18928,8 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 		                   dom->config[AUTHENTICATION_DOMAIN])) {
 			/* Domain collision */
 			mg_cry_ctx_internal(ctx,
-			                "domain %s already in use",
-			                new_dom->config[AUTHENTICATION_DOMAIN]);
+			                    "domain %s already in use",
+			                    new_dom->config[AUTHENTICATION_DOMAIN]);
 			mg_free(new_dom);
 			return -5;
 		}
@@ -18964,6 +19117,16 @@ mg_get_system_info(char *buffer, int buflen)
 		            (unsigned)si.wProcessorArchitecture,
 		            (unsigned)si.dwNumberOfProcessors,
 		            (unsigned)si.dwActiveProcessorMask);
+		system_info_length += mg_str_append(&buffer, end, block);
+#elif defined(__ZEPHYR__)
+		mg_snprintf(NULL,
+		            NULL,
+		            block,
+		            sizeof(block),
+		            ",%s\"os\" : \"%s %s\"",
+		            eol,
+		            "Zephyr OS",
+		            ZEPHYR_VERSION);
 		system_info_length += mg_str_append(&buffer, end, block);
 #else
 		struct utsname name;

@@ -351,7 +351,7 @@ void CFlyServerContext::send_syslog() const
 			         m_remote_ip.c_str(),
 			         (unsigned)get_real_query_size(),
 			         (unsigned)m_content_len,
-				(unsigned)g_count_query,
+					(unsigned)g_count_query,
 			         m_user_agent.c_str()
 			        );
 		}
@@ -368,7 +368,7 @@ void CFlyServerContext::send_syslog() const
 			         (unsigned)m_content_len,
 			         (unsigned)m_res_stat.size(),
 			         (unsigned)get_http_len(),
-				 (unsigned)get_delta_db(),
+					 (unsigned)get_delta_db(),
 			         m_user_agent.c_str(),
 			         l_buf_cache,
 			         l_buf_counter

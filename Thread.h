@@ -76,7 +76,7 @@ typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 
 #ifdef FLYLINKDC_USE_BOOST_LOCK
-typedef boost::recursive_mutex CriticalSection;
+typedef boost::recursive_mutex  CriticalSection;
 typedef boost::detail::spinlock FastCriticalSection;
 typedef boost::lock_guard<boost::recursive_mutex> Lock;
 #else
