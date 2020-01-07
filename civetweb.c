@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018 the Civetweb developers
+/* Copyright (c) 2013-2020 the Civetweb developers
  * Copyright (c) 2004-2013 Sergey Lyubka
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -132,16 +132,39 @@ mg_static_assert(sizeof(void *) == 4 || sizeof(void *) == 8,
 mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 
 
-/* Alternative queue is well tested and should be the new default */
-#if defined(NO_ALTERNATIVE_QUEUE)
-#if defined(ALTERNATIVE_QUEUE)
-#error "Define ALTERNATIVE_QUEUE or NO_ALTERNATIVE_QUEUE or none, but not both"
+/* Select queue implementation. Diagnosis features originally only implemented
+ * for the "ALTERNATIVE_QUEUE" have been ported to the previous queue
+ * implementation (NO_ALTERNATIVE_QUEUE) as well. The new configuration value
+ * "CONNECTION_QUEUE_SIZE" is only available for the previous queue
+ * implementation, since the queue length is independent from the number of
+ * worker threads there, while the new queue is one element per worker thread.
+ *
+ */
+#if defined(NO_ALTERNATIVE_QUEUE) && defined(ALTERNATIVE_QUEUE)
+/* The queues are exclusive or - only one can be used. */
+#error                                                                         \
+    "Define ALTERNATIVE_QUEUE or NO_ALTERNATIVE_QUEUE (or none of them), but not both"
 #endif
-#else
-#define ALTERNATIVE_QUEUE
+#if !defined(NO_ALTERNATIVE_QUEUE) && !defined(ALTERNATIVE_QUEUE)
+/* Use a default implementation */
+#define NO_ALTERNATIVE_QUEUE
 #endif
 
 #if defined(NO_FILESYSTEMS) && !defined(NO_FILES)
+/* File system access:
+ * NO_FILES = do not serve any files from the file system automatically.
+ * However, with NO_FILES CivetWeb may still write log files, read access
+ * control files, default error page files or use API functions like
+ * mg_send_file in callbacks to send files from the server local
+ * file system.
+ * NO_FILES only disables the automatic mapping between URLs and local
+ * file names.
+ * NO_FILESYSTEM = do not access any file at all. Useful for embedded
+ * devices without file system. Logging to files in not available
+ * (use callbacks instead) and API functions like mg_send_file are not
+ * available.
+ * If NO_FILESYSTEM is set, NO_FILES must be set as well.
+ */
 #error "Inconsistent build flags, NO_FILESYSTEMS requires NO_FILES"
 #endif
 
@@ -153,13 +176,9 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 #if defined(__SYMBIAN32__)
 /* According to https://en.wikipedia.org/wiki/Symbian#History,
  * Symbian is no longer maintained since 2014-01-01.
- * Recent versions of CivetWeb are no longer tested for Symbian.
- * It makes no sense, to support an abandoned operating system.
+ * Support for Symbian has been removed from CivetWeb
  */
 #error "Symbian is no longer maintained. CivetWeb no longer supports Symbian."
-#define NO_SSL /* SSL is not supported */
-#define NO_CGI /* CGI is not supported */
-#define PATH_MAX FILENAME_MAX
 #endif /* __SYMBIAN32__ */
 
 #if defined(__ZEPHYR__)
@@ -299,6 +318,7 @@ __cyg_profile_func_exit(void *this_fn, void *call_site)
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #endif /* !_WIN32_WCE */
@@ -452,12 +472,6 @@ _civet_safe_clock_gettime(int clk_id, struct timespec *t)
 /* General purpose buffer size. */
 #if !defined(MG_BUF_LEN) /* in bytes */
 #define MG_BUF_LEN (1024 * 8)
-#endif
-
-/* Size of the accepted socket queue (in case the old queue implementation
- * is used). */
-#if !defined(MGSQLEN)
-#define MGSQLEN (20) /* count */
 #endif
 
 
@@ -2359,6 +2373,7 @@ enum {
 	                     * socket option typedef TCP_NODELAY. */
 	MAX_REQUEST_SIZE,
 	LINGER_TIMEOUT,
+	CONNECTION_QUEUE_SIZE,
 	MAX_CONNECTIONS,
 #if defined(__linux__)
 	ALLOW_SENDFILE_CALL,
@@ -2438,6 +2453,7 @@ enum {
 	ERROR_PAGES,
 #if !defined(NO_CACHING)
 	STATIC_FILE_MAX_AGE,
+	STATIC_FILE_CACHE_CONTROL,
 #endif
 #if !defined(NO_SSL)
 	STRICT_HTTPS_MAX_AGE,
@@ -2464,6 +2480,7 @@ static const struct mg_option config_options[] = {
     {"tcp_nodelay", MG_CONFIG_TYPE_NUMBER, "0"},
     {"max_request_size", MG_CONFIG_TYPE_NUMBER, "16384"},
     {"linger_timeout_ms", MG_CONFIG_TYPE_NUMBER, NULL},
+    {"connection_queue", MG_CONFIG_TYPE_NUMBER, "20"},
     {"max_connections", MG_CONFIG_TYPE_NUMBER, "100"},
 #if defined(__linux__)
     {"allow_sendfile_call", MG_CONFIG_TYPE_BOOLEAN, "yes"},
@@ -2554,6 +2571,7 @@ static const struct mg_option config_options[] = {
     {"error_pages", MG_CONFIG_TYPE_DIRECTORY, NULL},
 #if !defined(NO_CACHING)
     {"static_file_max_age", MG_CONFIG_TYPE_NUMBER, "3600"},
+    {"static_file_cache_control", MG_CONFIG_TYPE_STRING, NULL},
 #endif
 #if !defined(NO_SSL)
     {"strict_transport_security_max_age", MG_CONFIG_TYPE_NUMBER, NULL},
@@ -2659,7 +2677,7 @@ struct mg_context {
 
 #if defined(USE_SERVER_STATS)
 	int active_connections;
-	int max_connections;
+	int max_active_connections;
 	int64_t total_connections;
 	int64_t total_requests;
 	int64_t total_data_read;
@@ -2680,12 +2698,18 @@ struct mg_context {
 	struct socket *client_socks;
 	void **client_wait_events;
 #else
-	struct socket queue[MGSQLEN]; /* Accepted sockets */
-	volatile int sq_head;         /* Head of the socket queue */
-	volatile int sq_tail;         /* Tail of the socket queue */
-	pthread_cond_t sq_full;       /* Signaled when socket is produced */
-	pthread_cond_t sq_empty;      /* Signaled when socket is consumed */
-#endif
+	struct socket *squeue; /* Socket queue (sq) : accepted sockets waiting for a
+	                          worker thread */
+	volatile int sq_head;  /* Head of the socket queue */
+	volatile int sq_tail;  /* Tail of the socket queue */
+	pthread_cond_t sq_full;  /* Signaled when socket is produced */
+	pthread_cond_t sq_empty; /* Signaled when socket is consumed */
+	volatile int sq_blocked; /* Status information: sq is full */
+	int sq_size;             /* No of elements in socket queue */
+#if defined(USE_SERVER_STATS)
+	int sq_max_fill;
+#endif /* USE_SERVER_STATS */
+#endif /* ALTERNATIVE_QUEUE */
 
 	/* Memory related */
 	unsigned int max_request_size; /* The max request size */
@@ -2760,11 +2784,15 @@ struct mg_connection {
 	                 * mg_get_connection_info_impl */
 #endif
 
-	const char *host;         /* Host (HTTP/1.1 header or SNI) */
-	SSL *ssl;                 /* SSL descriptor */
-	struct socket client;     /* Connected client */
-	time_t conn_birth_time;   /* Time (wall clock) when connection was
-	                           * established */
+	const char *host;       /* Host (HTTP/1.1 header or SNI) */
+	SSL *ssl;               /* SSL descriptor */
+	struct socket client;   /* Connected client */
+	time_t conn_birth_time; /* Time (wall clock) when connection was
+	                         * established */
+#if defined(USE_SERVER_STATS)
+	time_t conn_close_time; /* Time (wall clock) when connection was
+	                         * closed (or 0 if still open) */
+#endif
 	struct timespec req_time; /* Time (since system start) when the request
 	                           * was received */
 	int64_t num_bytes_sent;   /* Total bytes sent to client */
@@ -3050,11 +3078,11 @@ mg_set_thread_name(const char *name)
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 	}
 #elif defined(__MINGW32__)
-/* No option known to set thread name for MinGW */
+/* No option known to set thread name for MinGW known */
 #endif
 #elif defined(_GNU_SOURCE) && defined(__GLIBC__)                               \
     && ((__GLIBC__ > 2) || ((__GLIBC__ == 2) && (__GLIBC_MINOR__ >= 12)))
-/* pthread_setname_np first appeared in glibc in version 2.12*/
+/* pthread_setname_np first appeared in glibc in version 2.12 */
 #if defined(__MACH__)
 	/* OS X only current thread name can be changed */
 	(void)pthread_setname_np(threadName);
@@ -3062,7 +3090,11 @@ mg_set_thread_name(const char *name)
 	(void)pthread_setname_np(pthread_self(), threadName);
 #endif
 #elif defined(__linux__)
-	/* on linux we can use the old prctl function */
+	/* On Linux we can use the prctl function.
+	 * When building for Linux Standard Base (LSB) use
+	 * NO_THREAD_NAME. However, thread names are a big
+	 * help for debugging, so the stadard is to set them.
+	 */
 	(void)prctl(PR_SET_NAME, threadName, 0, 0, 0);
 #endif
 }
@@ -3517,6 +3549,13 @@ mg_get_user_data(const struct mg_context *ctx)
 
 
 void *
+mg_get_user_context_data(const struct mg_connection *conn)
+{
+	return mg_get_user_data(mg_get_context(conn));
+}
+
+
+void *
 mg_get_thread_pointer(const struct mg_connection *conn)
 {
 	/* both methods should return the same pointer */
@@ -3961,7 +4000,7 @@ mg_get_request_link(const struct mg_connection *conn, char *buf, size_t buflen)
 			int auth_domain_check_enabled =
 			    conn->dom_ctx->config[ENABLE_AUTH_DOMAIN_CHECK]
 			    && (!mg_strcasecmp(
-			           conn->dom_ctx->config[ENABLE_AUTH_DOMAIN_CHECK], "yes"));
+			        conn->dom_ctx->config[ENABLE_AUTH_DOMAIN_CHECK], "yes"));
 			const char *server_domain =
 			    conn->dom_ctx->config[AUTHENTICATION_DOMAIN];
 
@@ -4345,9 +4384,15 @@ static int
 send_static_cache_header(struct mg_connection *conn)
 {
 #if !defined(NO_CACHING)
+	int max_age;
+	const char *cache_control =
+	    conn->dom_ctx->config[STATIC_FILE_CACHE_CONTROL];
+	if (cache_control != NULL) {
+		return mg_printf(conn, "Cache-Control: %s\r\n", cache_control);
+	}
 	/* Read the server config to check how long a file may be cached.
 	 * The configuration is in seconds. */
-	int max_age = atoi(conn->dom_ctx->config[STATIC_FILE_MAX_AGE]);
+	max_age = atoi(conn->dom_ctx->config[STATIC_FILE_MAX_AGE]);
 	if (max_age <= 0) {
 		/* 0 means "do not cache". All values <0 are reserved
 		 * and may be used differently in the future. */
@@ -7821,33 +7866,159 @@ parse_date_string(const char *datetime)
 #endif /* !NO_CACHING */
 
 
-/* Protect against directory disclosure attack by removing '..',
- * excessive '/' and '\' characters */
+/* Pre-process URIs according to RFC + protect against directory disclosure
+ * attacks by removing '..', excessive '/' and '\' characters */
 static void
-remove_double_dots_and_double_slashes(char *s)
+remove_dot_segments(char *inout)
 {
-	char *p = s;
+	/* Windows backend protection
+	 * (https://tools.ietf.org/html/rfc3986#section-7.3): Replace backslash in
+	 * URI by slash */
+	char *in_copy = mg_strdup(inout);
+	char *out_begin = inout;
+	char *out_end = inout;
+	char *in = in_copy;
+	int replaced;
 
-	while ((s[0] == '.') && (s[1] == '.')) {
-		s++;
+	while (*in) {
+		if (*in == '\\') {
+			*in = '/';
+		}
+		in++;
 	}
 
-	while (*s != '\0') {
-		*p++ = *s++;
-		if ((s[-1] == '/') || (s[-1] == '\\')) {
-			/* Skip all following slashes, backslashes and double-dots */
-			while (s[0] != '\0') {
-				if ((s[0] == '/') || (s[0] == '\\')) {
-					s++;
-				} else if ((s[0] == '.') && (s[1] == '.')) {
-					s += 2;
-				} else {
-					break;
-				}
+	/* Algorithm "remove_dot_segments" from
+	 * https://tools.ietf.org/html/rfc3986#section-5.2.4 */
+	/* Step 1:
+	 * The input buffer is initialized.
+	 * The output buffer is initialized to the empty string.
+	 */
+	in = in_copy;
+
+	/* Step 2:
+	 * While the input buffer is not empty, loop as follows:
+	 */
+	while (*in) {
+		/* Step 2a:
+		 * If the input buffer begins with a prefix of "../" or "./",
+		 * then remove that prefix from the input buffer;
+		 */
+		if (!strncmp(in, "../", 3)) {
+			in += 3;
+		} else if (!strncmp(in, "./", 2)) {
+			in += 2;
+		}
+		/* otherwise */
+		/* Step 2b:
+		 * if the input buffer begins with a prefix of "/./" or "/.",
+		 * where "." is a complete path segment, then replace that
+		 * prefix with "/" in the input buffer;
+		 */
+		else if (!strncmp(in, "/./", 3)) {
+			in += 2;
+		} else if (!strcmp(in, "/.")) {
+			in[1] = 0;
+		}
+		/* otherwise */
+		/* Step 2c:
+		 * if the input buffer begins with a prefix of "/../" or "/..",
+		 * where ".." is a complete path segment, then replace that
+		 * prefix with "/" in the input buffer and remove the last
+		 * segment and its preceding "/" (if any) from the output
+		 * buffer;
+		 */
+		else if (!strncmp(in, "/../", 4)) {
+			in += 3;
+			if (out_begin != out_end) {
+				/* remove last segment */
+				do {
+					out_end--;
+					*out_end = 0;
+				} while ((out_begin != out_end) && (*out_end != '/'));
+			}
+		} else if (!strcmp(in, "/..")) {
+			in[1] = 0;
+			if (out_begin != out_end) {
+				/* remove last segment */
+				do {
+					out_end--;
+					*out_end = 0;
+				} while ((out_begin != out_end) && (*out_end != '/'));
 			}
 		}
+		/* otherwise */
+		/* Step 2d:
+		 * if the input buffer consists only of "." or "..", then remove
+		 * that from the input buffer;
+		 */
+		else if (!strcmp(in, ".") || !strcmp(in, "..")) {
+			*in = 0;
+		}
+		/* otherwise */
+		/* Step 2e:
+		 * move the first path segment in the input buffer to the end of
+		 * the output buffer, including the initial "/" character (if
+		 * any) and any subsequent characters up to, but not including,
+		 * the next "/" character or the end of the input buffer.
+		 */
+		else {
+			do {
+				*out_end = *in;
+				out_end++;
+				in++;
+			} while ((*in != 0) && (*in != '/'));
+		}
 	}
-	*p = '\0';
+
+	/* Step 3:
+	 * Finally, the output buffer is returned as the result of
+	 * remove_dot_segments.
+	 */
+	/* Terminate output */
+	*out_end = 0;
+
+	/* For Windows, the files/folders "x" and "x." (with a dot but without
+	 * extension) are identical. Replace all "./" by "/" and remove a "." at the
+	 * end.
+	 * Also replace all "//" by "/".
+	 * Repeat until there is no "./" or "//" anymore.
+	 */
+	do {
+		replaced = 0;
+
+		/* replace ./ by / */
+		out_end = out_begin;
+		while (*out_end) {
+			if ((*out_end == '.')
+			    && ((out_end[1] == '/') || (out_end[1] == 0))) {
+				char *r = out_end;
+				do {
+					r[0] = r[1];
+					r++;
+					replaced = 1;
+				} while (r[0] != 0);
+			}
+			out_end++;
+		}
+
+		/* replace ./ by / */
+		out_end = out_begin;
+		while (*out_end) {
+			if ((out_end[0] == '/') && (out_end[1] == '/')) {
+				char *c = out_end;
+				while (*c) {
+					c[0] = c[1];
+					c++;
+				}
+				replaced = 1;
+			}
+			out_end++;
+		}
+
+	} while (replaced);
+
+	/* Free temporary copies */
+	mg_free(in_copy);
 }
 
 
@@ -11031,14 +11202,14 @@ abort_process(void *data)
 	ret_pid = waitpid(proc->pid, &status, WNOHANG);
 	if ((ret_pid != (pid_t)-1) && (status == 0)) {
 		/* Stop child process */
-		DEBUG_TRACE("CGI timer: Stop child process %p\n", proc->pid);
+		DEBUG_TRACE("CGI timer: Stop child process %d\n", proc->pid);
 		kill(proc->pid, SIGABRT);
 
 		/* Wait until process is terminated (don't leave zombies) */
 		while (waitpid(proc->pid, &status, 0) != (pid_t)-1) /* nop */
 			;
 	} else {
-		DEBUG_TRACE("CGI timer: Child process %p already stopped\n", proc->pid);
+		DEBUG_TRACE("CGI timer: Child process %d already stopped\n", proc->pid);
 	}
 	/* Dec reference counter */
 	refs = mg_atomic_dec(&proc->references);
@@ -12056,7 +12227,7 @@ print_dav_dir_entry(struct de *de, void *data)
 	struct mg_connection *conn = (struct mg_connection *)data;
 	if (!de || !conn
 	    || !print_props(
-	           conn, conn->request_info.local_uri, de->file_name, &de->file)) {
+	        conn, conn->request_info.local_uri, de->file_name, &de->file)) {
 		return -1;
 	}
 	return 0;
@@ -13681,7 +13852,8 @@ is_in_script_path(const struct mg_connection *conn, const char *path)
 }
 
 
-#if defined(USE_WEBSOCKET) && defined(MG_LEGACY_INTERFACE)
+#if defined(USE_WEBSOCKET)                                                     \
+    && (defined(MG_LEGACY_INTERFACE) || defined(MG_EXPERIMENTAL_INTERFACES))
 static int
 deprecated_websocket_connect_wrapper(const struct mg_connection *conn,
                                      void *cbdata)
@@ -13718,6 +13890,17 @@ deprecated_websocket_data_wrapper(struct mg_connection *conn,
 	}
 	/* No handler set - assume "OK" */
 	return 1;
+}
+
+
+static void
+deprecated_websocket_close_wrapper(const struct mg_connection *conn,
+                                   void *cbdata)
+{
+	struct mg_callbacks *pcallbacks = (struct mg_callbacks *)cbdata;
+	if (pcallbacks->connection_close) {
+		pcallbacks->connection_close(conn);
+	}
 }
 #endif
 
@@ -13787,7 +13970,7 @@ handle_request(struct mg_connection *conn)
 
 	/* 1.4. clean URIs, so a path like allowed_dir/../forbidden_file is
 	 * not possible */
-	remove_double_dots_and_double_slashes((char *)ri->local_uri);
+	remove_dot_segments((char *)ri->local_uri);
 
 	/* step 1. completed, the url is known now */
 	uri_len = (int)strlen(ri->local_uri);
@@ -14095,7 +14278,7 @@ handle_request(struct mg_connection *conn)
 			    deprecated_websocket_ready_wrapper,
 			    deprecated_websocket_data_wrapper,
 			    NULL,
-			    conn->phys_ctx->user_data);
+			    conn->phys_ctx->callbacks);
 #else
 			mg_send_http_error(conn, 404, "%s", "Not found");
 #endif
@@ -14387,7 +14570,7 @@ parse_port_string(const struct vec *vec, struct socket *so, int *ip_version)
 #if defined(USE_IPV6)
 	} else if (sscanf(vec->ptr, "[%49[^]]]:%u%n", buf, &port, &len) == 2
 	           && mg_inet_pton(
-	                  AF_INET6, buf, &so->lsa.sin6, sizeof(so->lsa.sin6))) {
+	               AF_INET6, buf, &so->lsa.sin6, sizeof(so->lsa.sin6))) {
 		/* IPv6 address, examples: see above */
 		/* so->lsa.sin6.sin6_family = AF_INET6; already set by mg_inet_pton
 		 */
@@ -14999,14 +15182,14 @@ set_uid_option(struct mg_context *phys_ctx)
 		const char *run_as_user = phys_ctx->dd.config[RUN_AS_USER];
 		const struct passwd *to_pw = NULL;
 
-		if (run_as_user != NULL && (to_pw = getpwnam(run_as_user)) == NULL) {
+		if ((run_as_user != NULL) && (to_pw = getpwnam(run_as_user)) == NULL) {
 			/* run_as_user does not exist on the system. We can't proceed
 			 * further. */
 			mg_cry_ctx_internal(phys_ctx,
 			                    "%s: unknown user [%s]",
 			                    __func__,
 			                    run_as_user);
-		} else if (run_as_user == NULL || curr_uid == to_pw->pw_uid) {
+		} else if ((run_as_user == NULL) || (curr_uid == to_pw->pw_uid)) {
 			/* There was either no request to change user, or we're already
 			 * running as run_as_user. Nothing else to do.
 			 */
@@ -15080,7 +15263,7 @@ refresh_trust(struct mg_connection *conn)
 	int should_verify_peer;
 
 	if ((pem = conn->dom_ctx->config[SSL_CERTIFICATE]) == NULL) {
-		/* If peem is NULL and conn->phys_ctx->callbacks.init_ssl is not,
+		/* If pem is NULL and conn->phys_ctx->callbacks.init_ssl is not,
 		 * refresh_trust still can not work. */
 		return 0;
 	}
@@ -15928,6 +16111,28 @@ init_ssl_ctx_impl(struct mg_context *phys_ctx,
 		return 1;
 	}
 
+	/* If a domain callback has been specified, call it. */
+	callback_ret = (phys_ctx->callbacks.init_ssl_domain == NULL)
+	                   ? 0
+	                   : (phys_ctx->callbacks.init_ssl_domain(
+	                       dom_ctx->config[AUTHENTICATION_DOMAIN],
+	                       dom_ctx->ssl_ctx,
+	                       phys_ctx->user_data));
+
+	/* If domain callback returns 0, civetweb sets up the SSL certificate.
+	 * If it returns 1, civetweb assumes the calback already did this.
+	 * If it returns -1, initializing ssl fails. */
+	if (callback_ret < 0) {
+		mg_cry_ctx_internal(phys_ctx,
+		                    "Domain SSL callback returned error: %i",
+		                    callback_ret);
+		return 0;
+	}
+	if (callback_ret > 0) {
+		/* Domain callback did everything. */
+		return 1;
+	}
+
 	/* Use some combination of start time, domain and port as a SSL
 	 * context ID. This should be unique on the current machine. */
 	md5_init(&md5state);
@@ -16073,14 +16278,38 @@ init_ssl_ctx(struct mg_context *phys_ctx, struct mg_domain_context *dom_ctx)
 		}
 		return 1;
 	}
-	/* else: external_ssl_ctx does not exist or returns 0,
+
+	/* Check for external domain SSL_CTX */
+	callback_ret = (phys_ctx->callbacks.external_ssl_ctx_domain == NULL)
+	                   ? 0
+	                   : (phys_ctx->callbacks.external_ssl_ctx_domain(
+	                       dom_ctx->config[AUTHENTICATION_DOMAIN],
+	                       &ssl_ctx,
+	                       phys_ctx->user_data));
+
+	if (callback_ret < 0) {
+		mg_cry_ctx_internal(
+		    phys_ctx,
+		    "external_ssl_ctx_domain callback returned error: %i",
+		    callback_ret);
+		return 0;
+	} else if (callback_ret > 0) {
+		dom_ctx->ssl_ctx = (SSL_CTX *)ssl_ctx;
+		if (!initialize_ssl(ebuf, sizeof(ebuf))) {
+			mg_cry_ctx_internal(phys_ctx, "%s", ebuf);
+			return 0;
+		}
+		return 1;
+	}
+	/* else: external_ssl_ctx/external_ssl_ctx_domain do not exist or return 0,
 	 * CivetWeb should continue initializing SSL */
 
-	/* If PEM file is not specified and the init_ssl callback
-	 * is not specified, setup will fail. */
+	/* If PEM file is not specified and the init_ssl callbacks
+	 * are not specified, setup will fail. */
 	if (((pem = dom_ctx->config[SSL_CERTIFICATE]) == NULL)
-	    && (phys_ctx->callbacks.init_ssl == NULL)) {
-		/* No certificate and no callback:
+	    && (phys_ctx->callbacks.init_ssl == NULL)
+	    && (phys_ctx->callbacks.init_ssl_domain == NULL)) {
+		/* No certificate and no init_ssl callbacks:
 		 * Essential data to set up TLS is missing.
 		 */
 		mg_cry_ctx_internal(phys_ctx,
@@ -16719,6 +16948,96 @@ mg_connect_client(const char *host,
 	                              error_buffer,
 	                              error_buffer_size);
 }
+
+
+#if defined(MG_EXPERIMENTAL_INTERFACES)
+struct mg_connection *
+mg_connect_client2(const char *host,
+                   const char *protocol,
+                   int port,
+                   const char *path,
+                   struct mg_init_data *init,
+                   struct mg_error_data *error)
+{
+	int is_ssl, is_ws;
+	/* void *user_data = (init != NULL) ? init->user_data : NULL; -- TODO */
+
+	if (error != NULL) {
+		error->code = 0;
+		if (error->text_buffer_size > 0) {
+			*error->text = 0;
+		}
+	}
+
+	if ((host == NULL) || (protocol == NULL)) {
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            "Invalid parameters");
+		}
+		return NULL;
+	}
+
+	/* check all known protocolls */
+	if (!mg_strcasecmp(protocol, "http")) {
+		is_ssl = 0;
+		is_ws = 0;
+	} else if (!mg_strcasecmp(protocol, "https")) {
+		is_ssl = 1;
+		is_ws = 0;
+#if defined(USE_WEBSOCKET)
+	} else if (!mg_strcasecmp(protocol, "ws")) {
+		is_ssl = 0;
+		is_ws = 1;
+	} else if (!mg_strcasecmp(protocol, "wss")) {
+		is_ssl = 1;
+		is_ws = 1;
+#endif
+	} else {
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Protocol %s not supported",
+			            protocol);
+		}
+		return NULL;
+	}
+
+	/* TODO: The current implementation here just calls the old implementations,
+	 * without using any new options. This is just a first step to test the new
+	 * interfaces. */
+#if defined(USE_WEBSOCKET)
+	if (is_ws) {
+		/* TODO: implement all options */
+		return mg_connect_websocket_client(host,
+		                                   port,
+		                                   is_ssl,
+		                                   error->text,
+		                                   error->text_buffer_size,
+		                                   (path ? path : ""),
+		                                   NULL /* TODO: origin */,
+		                                   deprecated_websocket_data_wrapper,
+		                                   deprecated_websocket_close_wrapper,
+		                                   (void *)init->callbacks);
+	}
+#endif
+
+	/* TODO: all additional options */
+	struct mg_client_options opts;
+	memset(&opts, 0, sizeof(opts));
+	opts.host = host;
+	opts.port = port;
+	return mg_connect_client_impl(&opts,
+	                              is_ssl,
+	                              error->text,
+	                              error->text_buffer_size);
+}
+#endif
 
 
 static const struct {
@@ -17566,10 +17885,10 @@ process_new_connection(struct mg_connection *conn)
 #if defined(USE_SERVER_STATS)
 	int mcon = mg_atomic_inc(&(conn->phys_ctx->active_connections));
 	mg_atomic_add(&(conn->phys_ctx->total_connections), 1);
-	if (mcon > (conn->phys_ctx->max_connections)) {
+	if (mcon > (conn->phys_ctx->max_active_connections)) {
 		/* could use atomic compare exchange, but this
 		 * seems overkill for statistics data */
-		conn->phys_ctx->max_connections = mcon;
+		conn->phys_ctx->max_active_connections = mcon;
 	}
 #endif
 
@@ -17817,8 +18136,6 @@ consume_socket(struct mg_context *ctx, struct socket *sp, int thread_index)
 static int
 consume_socket(struct mg_context *ctx, struct socket *sp, int thread_index)
 {
-#define QUEUE_SIZE(ctx) ((int)(ARRAY_SIZE(ctx->queue)))
-
 	(void)thread_index;
 
 	(void)pthread_mutex_lock(&ctx->thread_mutex);
@@ -17832,15 +18149,15 @@ consume_socket(struct mg_context *ctx, struct socket *sp, int thread_index)
 	/* If we're stopping, sq_head may be equal to sq_tail. */
 	if (ctx->sq_head > ctx->sq_tail) {
 		/* Copy socket from the queue and increment tail */
-		*sp = ctx->queue[ctx->sq_tail % QUEUE_SIZE(ctx)];
+		*sp = ctx->squeue[ctx->sq_tail % ctx->sq_size];
 		ctx->sq_tail++;
 
 		DEBUG_TRACE("grabbed socket %d, going busy", sp ? sp->sock : -1);
 
 		/* Wrap pointers if needed */
-		while (ctx->sq_tail > QUEUE_SIZE(ctx)) {
-			ctx->sq_tail -= QUEUE_SIZE(ctx);
-			ctx->sq_head -= QUEUE_SIZE(ctx);
+		while (ctx->sq_tail > ctx->sq_size) {
+			ctx->sq_tail -= ctx->sq_size;
+			ctx->sq_head -= ctx->sq_size;
 		}
 	}
 
@@ -17848,7 +18165,6 @@ consume_socket(struct mg_context *ctx, struct socket *sp, int thread_index)
 	(void)pthread_mutex_unlock(&ctx->thread_mutex);
 
 	return !ctx->stop_flag;
-#undef QUEUE_SIZE
 }
 
 
@@ -17856,28 +18172,41 @@ consume_socket(struct mg_context *ctx, struct socket *sp, int thread_index)
 static void
 produce_socket(struct mg_context *ctx, const struct socket *sp)
 {
-#define QUEUE_SIZE(ctx) ((int)(ARRAY_SIZE(ctx->queue)))
-	if (!ctx) {
-		return;
-	}
+	int queue_filled;
+
 	(void)pthread_mutex_lock(&ctx->thread_mutex);
 
+	queue_filled = ctx->sq_head - ctx->sq_tail;
+
 	/* If the queue is full, wait */
-	while ((ctx->stop_flag == 0)
-	       && (ctx->sq_head - ctx->sq_tail >= QUEUE_SIZE(ctx))) {
+	while ((ctx->stop_flag == 0) && (queue_filled >= ctx->sq_size)) {
+		ctx->sq_blocked = 1; /* Status information: All threads bussy */
+#if defined(USE_SERVER_STATS)
+		if (queue_filled > ctx->sq_max_fill) {
+			ctx->sq_max_fill = queue_filled;
+		}
+#endif
 		(void)pthread_cond_wait(&ctx->sq_empty, &ctx->thread_mutex);
+		ctx->sq_blocked = 0; /* Not blocked now */
+		queue_filled = ctx->sq_head - ctx->sq_tail;
 	}
 
-	if (ctx->sq_head - ctx->sq_tail < QUEUE_SIZE(ctx)) {
+	if (queue_filled < ctx->sq_size) {
 		/* Copy socket to the queue and increment head */
-		ctx->queue[ctx->sq_head % QUEUE_SIZE(ctx)] = *sp;
+		ctx->squeue[ctx->sq_head % ctx->sq_size] = *sp;
 		ctx->sq_head++;
 		DEBUG_TRACE("queued socket %d", sp ? sp->sock : -1);
 	}
 
+	queue_filled = ctx->sq_head - ctx->sq_tail;
+#if defined(USE_SERVER_STATS)
+	if (queue_filled > ctx->sq_max_fill) {
+		ctx->sq_max_fill = queue_filled;
+	}
+#endif
+
 	(void)pthread_cond_signal(&ctx->sq_full);
 	(void)pthread_mutex_unlock(&ctx->thread_mutex);
-#undef QUEUE_SIZE
 }
 #endif /* ALTERNATIVE_QUEUE */
 
@@ -17961,6 +18290,9 @@ worker_thread_run(struct mg_connection *conn)
 	 * produce_socket() */
 	while (consume_socket(ctx, &conn->client, thread_index)) {
 
+#if defined(USE_SERVER_STATS)
+		conn->conn_close_time = 0;
+#endif
 		conn->conn_birth_time = time(NULL);
 
 /* Fill in IP, port info early so even if SSL setup below fails,
@@ -18031,6 +18363,10 @@ worker_thread_run(struct mg_connection *conn)
 		}
 
 		DEBUG_TRACE("%s", "Connection closed");
+
+#if defined(USE_SERVER_STATS)
+		conn->conn_close_time = time(NULL);
+#endif
 	}
 
 
@@ -18342,15 +18678,19 @@ free_context(struct mg_context *ctx)
 	 * condvars
 	 */
 	(void)pthread_mutex_destroy(&ctx->thread_mutex);
+
 #if defined(ALTERNATIVE_QUEUE)
 	mg_free(ctx->client_socks);
-	for (i = 0; (unsigned)i < ctx->cfg_worker_threads; i++) {
-		event_destroy(ctx->client_wait_events[i]);
+	if (ctx->client_wait_events != NULL) {
+		for (i = 0; (unsigned)i < ctx->cfg_worker_threads; i++) {
+			event_destroy(ctx->client_wait_events[i]);
+		}
+		mg_free(ctx->client_wait_events);
 	}
-	mg_free(ctx->client_wait_events);
 #else
 	(void)pthread_cond_destroy(&ctx->sq_empty);
 	(void)pthread_cond_destroy(&ctx->sq_full);
+	mg_free(ctx->squeue);
 #endif
 
 	/* Destroy other context global data structures mutex */
@@ -18451,7 +18791,6 @@ static void
 get_system_name(char **sysName)
 {
 #if defined(_WIN32)
-#if !defined(__SYMBIAN32__)
 #if defined(_WIN32_WCE)
 	*sysName = mg_strdup("WinCE");
 #else
@@ -18487,9 +18826,7 @@ get_system_name(char **sysName)
 
 	*sysName = mg_strdup(name);
 #endif
-#else
-	*sysName = mg_strdup("Symbian");
-#endif
+
 #elif defined(__ZEPHYR__)
 	*sysName = mg_strdup("Zephyr OS");
 #else
@@ -18501,10 +18838,39 @@ get_system_name(char **sysName)
 }
 
 
-struct mg_context *
-mg_start(const struct mg_callbacks *callbacks,
-         void *user_data,
-         const char **options)
+static void
+legacy_init(const char **options)
+{
+	const char *ports_option = config_options[LISTENING_PORTS].default_value;
+
+	if (options) {
+		const char **run_options = options;
+		const char *optname = config_options[LISTENING_PORTS].name;
+
+		/* Try to find the "listening_ports" option */
+		while (*run_options) {
+			if (!strcmp(*run_options, optname)) {
+				ports_option = run_options[1];
+			}
+			run_options += 2;
+		}
+	}
+
+	if (is_ssl_port_used(ports_option)) {
+		/* Initialize with SSL support */
+		mg_init_library(MG_FEATURES_TLS);
+	} else {
+		/* Initialize without SSL support */
+		mg_init_library(MG_FEATURES_DEFAULT);
+	}
+}
+
+
+#if !defined(MG_EXPERIMENTAL_INTERFACES)
+static
+#endif
+    struct mg_context *
+    mg_start2(struct mg_init_data *init, struct mg_error_data *error)
 {
 	struct mg_context *ctx;
 	const char *name, *value, *default_value;
@@ -18512,6 +18878,8 @@ mg_start(const struct mg_callbacks *callbacks,
 	unsigned int i;
 	int itmp;
 	void (*exit_callback)(const struct mg_context *ctx) = 0;
+	const char **options =
+	    ((init != NULL) ? (init->configuration_options) : (NULL));
 
 	struct mg_workerTLS tls;
 
@@ -18520,8 +18888,29 @@ mg_start(const struct mg_callbacks *callbacks,
 	WSAStartup(MAKEWORD(2, 2), &data);
 #endif /* _WIN32  */
 
+	if (error != NULL) {
+		error->code = 0;
+		if (error->text_buffer_size > 0) {
+			*error->text = 0;
+		}
+	}
+
+	if (mg_init_library_called == 0) {
+		/* Legacy INIT, if mg_start is called without mg_init_library.
+		 * Note: This will cause a memory leak when unloading the library. */
+		legacy_init(options);
+	}
+
 	/* Allocate context and initialize reasonable general case defaults. */
 	if ((ctx = (struct mg_context *)mg_calloc(1, sizeof(*ctx))) == NULL) {
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            "Out of memory");
+		}
 		return NULL;
 	}
 
@@ -18529,35 +18918,7 @@ mg_start(const struct mg_callbacks *callbacks,
 	ctx->dd.auth_nonce_mask =
 	    (uint64_t)get_random() ^ (uint64_t)(ptrdiff_t)(options);
 
-	if (mg_init_library_called == 0) {
-		/* Legacy INIT, if mg_start is called without mg_init_library.
-		 * Note: This may cause a memory leak */
-		const char *ports_option =
-		    config_options[LISTENING_PORTS].default_value;
-
-		if (options) {
-			const char **run_options = options;
-			const char *optname = config_options[LISTENING_PORTS].name;
-
-			/* Try to find the "listening_ports" option */
-			while (*run_options) {
-				if (!strcmp(*run_options, optname)) {
-					ports_option = run_options[1];
-				}
-				run_options += 2;
-			}
-		}
-
-		if (is_ssl_port_used(ports_option)) {
-			/* Initialize with SSL support */
-			mg_init_library(MG_FEATURES_TLS);
-		} else {
-			/* Initialize without SSL support */
-			mg_init_library(MG_FEATURES_DEFAULT);
-		}
-	}
-
-	tls.is_master = -1;
+	tls.is_master = -1; /* Thread calling mg_start */
 	tls.thread_idx = (unsigned)mg_atomic_inc(&thread_idx_max);
 #if defined(_WIN32)
 	tls.pthread_cond_helper_mutex = NULL;
@@ -18568,25 +18929,40 @@ mg_start(const struct mg_callbacks *callbacks,
 #if !defined(ALTERNATIVE_QUEUE)
 	ok &= (0 == pthread_cond_init(&ctx->sq_empty, NULL));
 	ok &= (0 == pthread_cond_init(&ctx->sq_full, NULL));
+	ctx->sq_blocked = 0;
 #endif
 	ok &= (0 == pthread_mutex_init(&ctx->nonce_mutex, &pthread_mutex_attr));
 	if (!ok) {
+		const char *err_msg =
+		    "Cannot initialize thread synchronization objects";
 		/* Fatal error - abort start. However, this situation should never
 		 * occur in practice. */
-		mg_cry_ctx_internal(ctx,
-		                    "%s",
-		                    "Cannot initialize thread synchronization objects");
+
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
+
 		mg_free(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
 	}
 
-	if (callbacks) {
-		ctx->callbacks = *callbacks;
-		exit_callback = callbacks->exit_context;
+	if ((init != NULL) && (init->callbacks != NULL)) {
+		/* Set all callbacks except exit_context. */
+		ctx->callbacks = *init->callbacks;
+		exit_callback = init->callbacks->exit_context;
+		/* The exit callback is activated once the context is successfully
+		 * created. It should not be called, if an incomplete context object is
+		 * deleted during a failed initialization. */
 		ctx->callbacks.exit_context = 0;
 	}
-	ctx->user_data = user_data;
+	ctx->user_data = ((init != NULL) ? (init->user_data) : (NULL));
 	ctx->dd.handlers = NULL;
 	ctx->dd.next = NULL;
 
@@ -18598,16 +18974,34 @@ mg_start(const struct mg_callbacks *callbacks,
 	while (options && (name = *options++) != NULL) {
 		if ((idx = get_option_index(name)) == -1) {
 			mg_cry_ctx_internal(ctx, "Invalid option: %s", name);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Invalid configuration option: %s",
+				            name);
+			}
 			free_context(ctx);
 			pthread_setspecific(sTlsKey, NULL);
 			return NULL;
 		} else if ((value = *options++) == NULL) {
 			mg_cry_ctx_internal(ctx, "%s: option value cannot be NULL", name);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Invalid configuration option value: %s",
+				            name);
+			}
 			free_context(ctx);
 			pthread_setspecific(sTlsKey, NULL);
 			return NULL;
 		}
 		if (ctx->dd.config[idx] != NULL) {
+			/* A duplicate configuration option is not an error - the last
+			 * option value will be used. */
 			mg_cry_ctx_internal(ctx, "warning: %s: duplicate option", name);
 			mg_free(ctx->dd.config[idx]);
 		}
@@ -18626,25 +19020,79 @@ mg_start(const struct mg_callbacks *callbacks,
 	/* Request size option */
 	itmp = atoi(ctx->dd.config[MAX_REQUEST_SIZE]);
 	if (itmp < 1024) {
-		mg_cry_ctx_internal(ctx, "%s", "max_request_size too small");
+		mg_cry_ctx_internal(ctx,
+		                    "%s too small",
+		                    config_options[MAX_REQUEST_SIZE].name);
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Invalid configuration option value: %s",
+			            config_options[MAX_REQUEST_SIZE].name);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
 	}
 	ctx->max_request_size = (unsigned)itmp;
 
-	/* Worker thread count option */
-	workerthreadcount = atoi(ctx->dd.config[NUM_THREADS]);
-
-	if (workerthreadcount > MAX_WORKER_THREADS) {
-		mg_cry_ctx_internal(ctx, "%s", "Too many worker threads");
+	/* Queue length */
+#if !defined(ALTERNATIVE_QUEUE)
+	itmp = atoi(ctx->dd.config[CONNECTION_QUEUE_SIZE]);
+	if (itmp < 1) {
+		mg_cry_ctx_internal(ctx,
+		                    "%s too small",
+		                    config_options[CONNECTION_QUEUE_SIZE].name);
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Invalid configuration option value: %s",
+			            config_options[CONNECTION_QUEUE_SIZE].name);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
 	}
+	ctx->squeue = (struct socket *)mg_calloc(itmp, sizeof(struct socket));
+	if (ctx->squeue == NULL) {
+		mg_cry_ctx_internal(ctx,
+		                    "Out of memory: Cannot allocate %s",
+		                    config_options[CONNECTION_QUEUE_SIZE].name);
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Out of memory: Cannot allocate %s",
+			            config_options[CONNECTION_QUEUE_SIZE].name);
+		}
+		free_context(ctx);
+		pthread_setspecific(sTlsKey, NULL);
+		return NULL;
+	}
+	ctx->sq_size = itmp;
+#endif
 
-	if (workerthreadcount <= 0) {
-		mg_cry_ctx_internal(ctx, "%s", "Invalid number of worker threads");
+	/* Worker thread count option */
+	workerthreadcount = atoi(ctx->dd.config[NUM_THREADS]);
+
+	if ((workerthreadcount > MAX_WORKER_THREADS) || (workerthreadcount <= 0)) {
+		if (workerthreadcount <= 0) {
+			mg_cry_ctx_internal(ctx, "%s", "Invalid number of worker threads");
+		} else {
+			mg_cry_ctx_internal(ctx, "%s", "Too many worker threads");
+		}
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Invalid configuration option value: %s",
+			            config_options[NUM_THREADS].name);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18654,6 +19102,14 @@ mg_start(const struct mg_callbacks *callbacks,
 #if defined(NO_FILES)
 	if (ctx->dd.config[DOCUMENT_ROOT] != NULL) {
 		mg_cry_ctx_internal(ctx, "%s", "Document root must not be set");
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Invalid configuration option value: %s",
+			            config_options[DOCUMENT_ROOT].name);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18673,6 +19129,15 @@ mg_start(const struct mg_callbacks *callbacks,
 		    ctx->dd.config[LUA_BACKGROUND_SCRIPT], ctx, ebuf, sizeof(ebuf));
 		if (!state) {
 			mg_cry_ctx_internal(ctx, "lua_background_script error: %s", ebuf);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Error in script %s: %s",
+				            config_options[DOCUMENT_ROOT].name,
+				            ebuf);
+			}
 			free_context(ctx);
 			pthread_setspecific(sTlsKey, NULL);
 			return NULL;
@@ -18697,20 +19162,99 @@ mg_start(const struct mg_callbacks *callbacks,
 	}
 #endif
 
-	/* NOTE(lsm): order is important here. SSL certificates must
-	 * be initialized before listening ports. UID must be set last. */
-	if (
+	/* Step by step initialization of ctx - depending on build options */
 #if !defined(NO_FILESYSTEMS)
-	    !set_gpass_option(ctx, NULL) ||
+	if (!set_gpass_option(ctx, NULL)) {
+		const char *err_msg = "Invalid global password file";
+		/* Fatal error - abort start. */
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
+		free_context(ctx);
+		pthread_setspecific(sTlsKey, NULL);
+		return NULL;
+	}
 #endif
+
 #if !defined(NO_SSL)
-	    !init_ssl_ctx(ctx, NULL) ||
+	if (!init_ssl_ctx(ctx, NULL)) {
+		const char *err_msg = "Error initializing SSL context";
+		/* Fatal error - abort start. */
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
+		free_context(ctx);
+		pthread_setspecific(sTlsKey, NULL);
+		return NULL;
+	}
 #endif
-	    !set_ports_option(ctx) ||
+
+	if (!set_ports_option(ctx)) {
+		const char *err_msg = "Failed to setup server ports";
+		/* Fatal error - abort start. */
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
+		free_context(ctx);
+		pthread_setspecific(sTlsKey, NULL);
+		return NULL;
+	}
+
+
 #if !defined(_WIN32) && !defined(__ZEPHYR__)
-	    !set_uid_option(ctx) ||
+	if (!set_uid_option(ctx)) {
+		const char *err_msg = "Failed to run as configured user";
+		/* Fatal error - abort start. */
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
+		free_context(ctx);
+		pthread_setspecific(sTlsKey, NULL);
+		return NULL;
+	}
 #endif
-	    !set_acl_option(ctx)) {
+
+	if (!set_acl_option(ctx)) {
+		const char *err_msg = "Failed to setup access control list";
+		/* Fatal error - abort start. */
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18722,9 +19266,17 @@ mg_start(const struct mg_callbacks *callbacks,
 	                                                   ctx);
 
 	if (ctx->worker_threadids == NULL) {
-		mg_cry_ctx_internal(ctx,
-		                    "%s",
-		                    "Not enough memory for worker thread ID array");
+		const char *err_msg = "Not enough memory for worker thread ID array";
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18734,13 +19286,22 @@ mg_start(const struct mg_callbacks *callbacks,
 	                                          sizeof(struct mg_connection),
 	                                          ctx);
 	if (ctx->worker_connections == NULL) {
-		mg_cry_ctx_internal(
-		    ctx, "%s", "Not enough memory for worker thread connection array");
+		const char *err_msg =
+		    "Not enough memory for worker thread connection array";
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
 	}
-
 
 #if defined(ALTERNATIVE_QUEUE)
 	ctx->client_wait_events =
@@ -18748,10 +19309,18 @@ mg_start(const struct mg_callbacks *callbacks,
 	                           sizeof(ctx->client_wait_events[0]),
 	                           ctx);
 	if (ctx->client_wait_events == NULL) {
-		mg_cry_ctx_internal(ctx,
-		                    "%s",
-		                    "Not enough memory for worker event array");
+		const char *err_msg = "Not enough memory for worker event array";
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
 		mg_free(ctx->worker_threadids);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18762,11 +19331,19 @@ mg_start(const struct mg_callbacks *callbacks,
 	                                   sizeof(ctx->client_socks[0]),
 	                                   ctx);
 	if (ctx->client_socks == NULL) {
-		mg_cry_ctx_internal(ctx,
-		                    "%s",
-		                    "Not enough memory for worker socket array");
+		const char *err_msg = "Not enough memory for worker socket array";
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
 		mg_free(ctx->client_wait_events);
 		mg_free(ctx->worker_threadids);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18775,7 +19352,8 @@ mg_start(const struct mg_callbacks *callbacks,
 	for (i = 0; (unsigned)i < ctx->cfg_worker_threads; i++) {
 		ctx->client_wait_events[i] = event_create();
 		if (ctx->client_wait_events[i] == 0) {
-			mg_cry_ctx_internal(ctx, "Error creating worker event %i", i);
+			const char *err_msg = "Error creating worker event %i";
+			mg_cry_ctx_internal(ctx, err_msg, i);
 			while (i > 0) {
 				i--;
 				event_destroy(ctx->client_wait_events[i]);
@@ -18783,6 +19361,15 @@ mg_start(const struct mg_callbacks *callbacks,
 			mg_free(ctx->client_socks);
 			mg_free(ctx->client_wait_events);
 			mg_free(ctx->worker_threadids);
+
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            err_msg,
+				            i);
+			}
 			free_context(ctx);
 			pthread_setspecific(sTlsKey, NULL);
 			return NULL;
@@ -18790,10 +19377,19 @@ mg_start(const struct mg_callbacks *callbacks,
 	}
 #endif
 
-
 #if defined(USE_TIMERS)
 	if (timers_init(ctx) != 0) {
-		mg_cry_ctx_internal(ctx, "%s", "Error creating timers");
+		const char *err_msg = "Error creating timers";
+		mg_cry_ctx_internal(ctx, "%s", err_msg);
+
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            err_msg);
+		}
 		free_context(ctx);
 		pthread_setspecific(sTlsKey, NULL);
 		return NULL;
@@ -18804,6 +19400,9 @@ mg_start(const struct mg_callbacks *callbacks,
 	if (ctx->callbacks.init_context) {
 		ctx->callbacks.init_context(ctx);
 	}
+
+	/* From now, the context is successfully created.
+	 * When it is destroyed, the exit callback should be called. */
 	ctx->callbacks.exit_context = exit_callback;
 	ctx->context_type = CONTEXT_SERVER; /* server context */
 
@@ -18819,16 +19418,38 @@ mg_start(const struct mg_callbacks *callbacks,
 		                            &ctx->worker_threadids[i])
 		    != 0) {
 
+			long error_no = (long)ERRNO;
+
 			/* thread was not created */
 			if (i > 0) {
+				/* If the second, third, ... thread cannot be created, set a
+				 * warning, but keep running. */
 				mg_cry_ctx_internal(ctx,
 				                    "Cannot start worker thread %i: error %ld",
 				                    i + 1,
-				                    (long)ERRNO);
+				                    error_no);
+
+				/* If the server initialization should stop here, all threads
+				 * that have already been created must be stopped first, before
+				 * any free_context(ctx) call.
+				 */
+
 			} else {
+				/* If the first worker thread cannot be created, stop
+				 * initialization and free the entire server context. */
 				mg_cry_ctx_internal(ctx,
 				                    "Cannot create threads: error %ld",
-				                    (long)ERRNO);
+				                    error_no);
+
+				if ((error != NULL) && (error->text_buffer_size > 0)) {
+					mg_snprintf(
+					    NULL,
+					    NULL, /* No truncation check for error buffers */
+					    error->text,
+					    error->text_buffer_size,
+					    "Cannot create first worker thread: error %ld",
+					    error_no);
+				}
 				free_context(ctx);
 				pthread_setspecific(sTlsKey, NULL);
 				return NULL;
@@ -18842,10 +19463,26 @@ mg_start(const struct mg_callbacks *callbacks,
 }
 
 
+struct mg_context *
+mg_start(const struct mg_callbacks *callbacks,
+         void *user_data,
+         const char **options)
+{
+	struct mg_init_data init = {0};
+	init.callbacks = callbacks;
+	init.user_data = user_data;
+	init.configuration_options = options;
+
+	return mg_start2(&init, NULL);
+}
+
+
 #if defined(MG_EXPERIMENTAL_INTERFACES)
 /* Add an additional domain to an already running web server. */
 int
-mg_start_domain(struct mg_context *ctx, const char **options)
+mg_start_domain2(struct mg_context *ctx,
+                 const char **options,
+                 struct mg_error_data *error)
 {
 	const char *name;
 	const char *value;
@@ -18854,7 +19491,34 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 	struct mg_domain_context *dom;
 	int idx, i;
 
-	if ((ctx == NULL) || (ctx->stop_flag != 0) || (options == NULL)) {
+	if (error != NULL) {
+		error->code = 0;
+		if (error->text_buffer_size > 0) {
+			*error->text = 0;
+		}
+	}
+
+	if ((ctx == NULL) || (options == NULL)) {
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            "Invalid parameters");
+		}
+		return -1;
+	}
+
+	if (ctx->stop_flag != 0) {
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            "Server already stopped");
+		}
 		return -1;
 	}
 
@@ -18863,6 +19527,14 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 
 	if (!new_dom) {
 		/* Out of memory */
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            "Out or memory");
+		}
 		return -6;
 	}
 
@@ -18870,14 +19542,31 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 	while (options && (name = *options++) != NULL) {
 		if ((idx = get_option_index(name)) == -1) {
 			mg_cry_ctx_internal(ctx, "Invalid option: %s", name);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Invalid option: %s",
+				            name);
+			}
 			mg_free(new_dom);
 			return -2;
 		} else if ((value = *options++) == NULL) {
 			mg_cry_ctx_internal(ctx, "%s: option value cannot be NULL", name);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Invalid option value: %s",
+				            name);
+			}
 			mg_free(new_dom);
 			return -2;
 		}
 		if (new_dom->config[idx] != NULL) {
+			/* Duplicate option: Later values overwrite earlier ones. */
 			mg_cry_ctx_internal(ctx, "warning: %s: duplicate option", name);
 			mg_free(new_dom->config[idx]);
 		}
@@ -18889,6 +19578,14 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 	/* TODO: Maybe use a new option hostname? */
 	if (!new_dom->config[AUTHENTICATION_DOMAIN]) {
 		mg_cry_ctx_internal(ctx, "%s", "authentication domain required");
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "Mandatory option %s missing",
+			            config_options[AUTHENTICATION_DOMAIN].name);
+		}
 		mg_free(new_dom);
 		return -4;
 	}
@@ -18914,6 +19611,14 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 
 	if (!init_ssl_ctx(ctx, new_dom)) {
 		/* Init SSL failed */
+		if ((error != NULL) && (error->text_buffer_size > 0)) {
+			mg_snprintf(NULL,
+			            NULL, /* No truncation check for error buffers */
+			            error->text,
+			            error->text_buffer_size,
+			            "%s",
+			            "Initializing SSL context failed");
+		}
 		mg_free(new_dom);
 		return -3;
 	}
@@ -18930,6 +19635,15 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 			mg_cry_ctx_internal(ctx,
 			                    "domain %s already in use",
 			                    new_dom->config[AUTHENTICATION_DOMAIN]);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Domain %s specified by %s is already in use",
+				            new_dom->config[AUTHENTICATION_DOMAIN],
+				            config_options[AUTHENTICATION_DOMAIN].name);
+			}
 			mg_free(new_dom);
 			return -5;
 		}
@@ -18949,6 +19663,14 @@ mg_start_domain(struct mg_context *ctx, const char **options)
 	/* Return domain number */
 	return idx;
 }
+
+
+int
+mg_start_domain(struct mg_context *ctx, const char **options)
+{
+	return mg_start_domain2(ctx, options, NULL);
+}
+
 #endif
 
 
@@ -19436,11 +20158,36 @@ mg_get_context_info(const struct mg_context *ctx, char *buffer, int buflen)
 		            eol,
 		            ctx->active_connections,
 		            eol,
-		            ctx->max_connections,
+		            ctx->max_active_connections,
 		            eol,
 		            ctx->total_connections,
 		            eol);
 		context_info_length += mg_str_append(&buffer, end, block);
+
+		/* Queue information */
+#if !defined(ALTERNATIVE_QUEUE)
+		mg_snprintf(NULL,
+		            NULL,
+		            block,
+		            sizeof(block),
+		            ",%s\"queue\" : {%s"
+		            "\"length\" : %i,%s"
+		            "\"filled\" : %i,%s"
+		            "\"maxFilled\" : %i,%s"
+		            "\"full\" : %s%s"
+		            "}",
+		            eol,
+		            eol,
+		            ctx->sq_size,
+		            eol,
+		            ctx->sq_head - ctx->sq_tail,
+		            eol,
+		            ctx->sq_max_fill,
+		            eol,
+		            (ctx->sq_blocked ? "true" : "false"),
+		            eol);
+		context_info_length += mg_str_append(&buffer, end, block);
+#endif
 
 		/* Requests information */
 		mg_snprintf(NULL,
@@ -19666,14 +20413,24 @@ mg_get_connection_info(const struct mg_context *ctx,
 	/* Execution time information */
 	if ((state >= 2) && (state < 9)) {
 		char start_time_str[64] = {0};
-		char now_str[64] = {0};
+		char close_time_str[64] = {0};
 		time_t start_time = conn->conn_birth_time;
-		time_t now = time(NULL);
+		time_t close_time = conn->conn_close_time;
+		double time_diff;
 
 		gmt_time_string(start_time_str,
 		                sizeof(start_time_str) - 1,
 		                &start_time);
-		gmt_time_string(now_str, sizeof(now_str) - 1, &now);
+		if (close_time != 0) {
+			time_diff = difftime(close_time, start_time);
+			gmt_time_string(close_time_str,
+			                sizeof(close_time_str) - 1,
+			                &close_time);
+		} else {
+			time_t now = time(NULL);
+			time_diff = difftime(now, start_time);
+			close_time_str[0] = 0; /* or use "now" ? */
+		}
 
 		mg_snprintf(NULL,
 		            NULL,
@@ -19682,16 +20439,16 @@ mg_get_connection_info(const struct mg_context *ctx,
 		            "%s%s\"time\" : {%s"
 		            "\"uptime\" : %.0f,%s"
 		            "\"start\" : \"%s\",%s"
-		            "\"now\" : \"%s\"%s"
+		            "\"closed\" : \"%s\"%s"
 		            "}",
 		            (connection_info_length > 1 ? "," : ""),
 		            eol,
 		            eol,
-		            difftime(now, start_time),
+		            time_diff,
 		            eol,
 		            start_time_str,
 		            eol,
-		            now_str,
+		            close_time_str,
 		            eol);
 		connection_info_length += mg_str_append(&buffer, end, block);
 	}
