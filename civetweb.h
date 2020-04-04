@@ -23,9 +23,9 @@
 #ifndef CIVETWEB_HEADER_INCLUDED
 #define CIVETWEB_HEADER_INCLUDED
 
-#define CIVETWEB_VERSION "1.12"
+#define CIVETWEB_VERSION "1.13"
 #define CIVETWEB_VERSION_MAJOR (1)
-#define CIVETWEB_VERSION_MINOR (12)
+#define CIVETWEB_VERSION_MINOR (13)
 #define CIVETWEB_VERSION_PATCH (0)
 
 
@@ -1468,6 +1468,17 @@ CIVETWEB_API struct mg_connection *
 mg_connect_client_secure(const struct mg_client_options *client_options,
                          char *error_buffer,
                          size_t error_buffer_size);
+
+
+CIVETWEB_API struct mg_connection *mg_connect_websocket_client_secure(
+    const struct mg_client_options *client_options,
+    char *error_buffer,
+    size_t error_buffer_size,
+    const char *path,
+    const char *origin,
+    mg_websocket_data_handler data_func,
+    mg_websocket_close_handler close_func,
+    void *user_data);
 
 
 #if defined(MG_LEGACY_INTERFACE) /* 2019-11-02 */
