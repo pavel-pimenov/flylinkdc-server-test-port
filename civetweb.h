@@ -392,6 +392,8 @@ struct mg_callbacks {
 	void (*exit_context)(const struct mg_context *ctx);
 
 	/* Called when a new worker thread is initialized.
+	 * It is always called from the newly created thread and can be used to
+	 * initialize thread local storage data.
 	 * Parameters:
 	 *   ctx: context handle
 	 *   thread_type:
@@ -515,7 +517,8 @@ typedef int (*mg_request_handler)(struct mg_connection *conn, void *cbdata);
 /* mg_set_request_handler
 
    Sets or removes a URI mapping for a request handler.
-   This function uses mg_lock_context internally.
+   This function waits until a removing/updating handler becomes unused, so
+   do not call from the handler itself.
 
    URI's are ordered and prefixed URI's are supported. For example,
    consider two URIs: /a/b and /a
@@ -870,7 +873,8 @@ CIVETWEB_API int mg_websocket_client_write(struct mg_connection *conn,
    with websockets only.
    Invoke this before mg_write or mg_printf when communicating with a
    websocket if your code has server-initiated communication as well as
-   communication in direct response to a message. */
+   communication in direct response to a message.
+   Do not acquire this lock while holding mg_lock_context(). */
 CIVETWEB_API void mg_lock_connection(struct mg_connection *conn);
 CIVETWEB_API void mg_unlock_connection(struct mg_connection *conn);
 
@@ -882,7 +886,8 @@ CIVETWEB_API void mg_unlock_connection(struct mg_connection *conn);
 
 
 /* Lock server context.  This lock may be used to protect resources
-   that are shared between different connection/worker threads. */
+   that are shared between different connection/worker threads.
+   If the given context is not server, these functions do nothing. */
 CIVETWEB_API void mg_lock_context(struct mg_context *ctx);
 CIVETWEB_API void mg_unlock_context(struct mg_context *ctx);
 
@@ -1135,10 +1140,9 @@ CIVETWEB_API int mg_get_var(const char *data,
      var_name: variable name to decode from the buffer
      dst: destination buffer for the decoded variable
      dst_len: length of the destination buffer
-     occurrence: which occurrence of the variable, 0 is the first, 1 the
-                 second...
-                this makes it possible to parse a query like
-                b=x&a=y&a=z which will have occurrence values b:0, a:0 and a:1
+     occurrence: which occurrence of the variable, 0 is the 1st, 1 the 2nd, ...
+                 this makes it possible to parse a query like
+                 b=x&a=y&a=z which will have occurrence values b:0, a:0 and a:1
 
    Return:
      On success, length of the decoded variable.
@@ -1155,6 +1159,39 @@ CIVETWEB_API int mg_get_var2(const char *data,
                              char *dst,
                              size_t dst_len,
                              size_t occurrence);
+
+
+/* Split form encoded data into a list of key value pairs.
+   A form encoded input might be a query string, the body of a
+   x-www-form-urlencoded POST request or any other data with this
+   structure: "keyName1=value1&keyName2=value2&keyName3=value3".
+   Values might be percent-encoded - this function will transform
+   them to the unencoded characters.
+   The input string is modified by this function: To split the
+   "query_string" member of struct request_info, create a copy first
+   (e.g., using strdup).
+   The function itself does not allocate memory. Thus, it is not
+   required to free any pointer returned from this function.
+   The output list of is limited to MG_MAX_FORM_FIELDS name-value-
+   pairs. The default value is reasonably oversized for typical
+   applications, however, for special purpose systems it might be
+   required to increase this value at compile time.
+
+   Parameters:
+     data: form encoded iput string. Will be modified by this function.
+     form_fields: output list of name/value-pairs. A buffer with a size
+                  specified by num_form_fields must be provided by the
+                  caller.
+     num_form_fields: Size of provided form_fields buffer in number of
+                      "struct mg_header" elements.
+
+   Return:
+     On success: number of form_fields filled
+     On error:
+        -1 (parameter error). */
+CIVETWEB_API int mg_split_form_urlencoded(char *data,
+                                          struct mg_header *form_fields,
+                                          unsigned num_form_fields);
 
 
 /* Fetch value of certain cookie variable into the destination buffer.
