@@ -6083,6 +6083,10 @@ mg_stat(const struct mg_connection *conn,
 	}
 	memset(filep, 0, sizeof(*filep));
 
+	if (mg_path_suspicious(conn, path)) {
+		return 0;
+	}
+
 	if (0 == stat(path, &st)) {
 		filep->size = (uint64_t)(st.st_size);
 		filep->last_modified = st.st_mtime;
@@ -11385,7 +11389,7 @@ struct process_control_data {
 };
 
 static int
-abort_process(void *data)
+abort_cgi_process(void *data)
 {
 	/* Waitpid checks for child status and won't work for a pid that does
 	 * not identify a child of the current process. Thus, if the pid is
@@ -11530,8 +11534,9 @@ handle_cgi_request(struct mg_connection *conn, const char *prog)
 		          cgi_timeout /* in seconds */,
 		          0.0,
 		          1,
-		          abort_process,
-		          (void *)proc);
+		          abort_cgi_process,
+		          (void *)proc,
+		          NULL);
 	}
 #endif
 
@@ -11704,7 +11709,7 @@ done:
 	mg_free(blk.buf);
 
 	if (pid != (pid_t)-1) {
-		abort_process((void *)proc);
+		abort_cgi_process((void *)proc);
 	}
 
 	if (fdin[0] != -1) {
@@ -19068,6 +19073,7 @@ free_context(struct mg_context *ctx)
 		return;
 	}
 
+	/* Call user callback */
 	if (ctx->callbacks.exit_context) {
 		ctx->callbacks.exit_context(ctx);
 	}
@@ -19093,10 +19099,6 @@ free_context(struct mg_context *ctx)
 
 	/* Destroy other context global data structures mutex */
 	(void)pthread_mutex_destroy(&ctx->nonce_mutex);
-
-#if defined(USE_TIMERS)
-	timers_exit(ctx);
-#endif
 
 	/* Deallocate config parameters */
 	for (i = 0; i < NUM_OPTIONS; i++) {
@@ -19167,12 +19169,25 @@ mg_stop(struct mg_context *ctx)
 	/* Set stop flag, so all threads know they have to exit. */
 	STOP_FLAG_ASSIGN(&ctx->stop_flag, 1);
 
+	/* Join timer thread */
+#if defined(USE_TIMERS)
+	timers_exit(ctx);
+#endif
+
 	/* Wait until everything has stopped. */
 	while (!STOP_FLAG_IS_TWO(&ctx->stop_flag)) {
 		(void)mg_sleep(10);
 	}
 
+	/* Wait to stop master thread */
 	mg_join_thread(mt);
+
+	/* Close remaining Lua states */
+#if defined(USE_LUA)
+	lua_ctx_exit(ctx);
+#endif
+
+	/* Free memory */
 	free_context(ctx);
 }
 
@@ -19367,8 +19382,8 @@ static
 	ctx->dd.handlers = NULL;
 	ctx->dd.next = NULL;
 
-#if defined(USE_LUA) && defined(USE_WEBSOCKET)
-	ctx->dd.shared_lua_websockets = NULL;
+#if defined(USE_LUA)
+	lua_ctx_init(ctx);
 #endif
 
 	/* Store options */
