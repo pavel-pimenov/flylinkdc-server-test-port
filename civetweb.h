@@ -23,9 +23,9 @@
 #ifndef CIVETWEB_HEADER_INCLUDED
 #define CIVETWEB_HEADER_INCLUDED
 
-#define CIVETWEB_VERSION "1.13"
+#define CIVETWEB_VERSION "1.14"
 #define CIVETWEB_VERSION_MAJOR (1)
-#define CIVETWEB_VERSION_MINOR (13)
+#define CIVETWEB_VERSION_MINOR (14)
 #define CIVETWEB_VERSION_PATCH (0)
 
 
@@ -305,21 +305,8 @@ struct mg_callbacks {
 	                               void **ssl_ctx,
 	                               void *user_data);
 
-#if defined(MG_LEGACY_INTERFACE)           /* 2015-08-19 */                    \
-    || defined(MG_EXPERIMENTAL_INTERFACES) /* 2019-11-03 */
-	/* Called when websocket request is received, before websocket handshake.
-	   Return value:
-	     0: civetweb proceeds with websocket handshake.
-	     1: connection is closed immediately.
-	   This callback is deprecated: Use mg_set_websocket_handler instead. */
-	int (*websocket_connect)(const struct mg_connection *);
-
-	/* Called when websocket handshake is successfully completed, and
-	   connection is ready for data exchange.
-	   This callback is deprecated: Use mg_set_websocket_handler instead. */
-	void (*websocket_ready)(struct mg_connection *);
-
-	/* Called when data frame has been received from the client.
+#if defined(MG_EXPERIMENTAL_INTERFACES) /* 2019-11-03 */
+	/* Called when data frame has been received from the peer.
 	   Parameters:
 	     bits: first byte of the websocket frame, see websocket RFC at
 	           http://tools.ietf.org/html/rfc6455, section 5.2
@@ -367,14 +354,6 @@ struct mg_callbacks {
 	                 void *lua_context,
 	                 unsigned context_flags);
 
-#if defined(MG_LEGACY_INTERFACE) /* 2016-05-14 */
-	/* Called when civetweb has uploaded a file to a temporary directory as a
-	   result of mg_upload() call.
-	   Note that mg_upload is deprecated. Use mg_handle_form_request instead.
-	   Parameters:
-	     file_name: full path name to the uploaded file. */
-	void (*upload)(struct mg_connection *, const char *file_name);
-#endif
 
 	/* Called when civetweb is about to send HTTP error to the client.
 	   Implementing this callback allows to create custom error pages.
@@ -706,16 +685,6 @@ CIVETWEB_API int
 mg_get_request_link(const struct mg_connection *conn, char *buf, size_t buflen);
 
 
-#if defined(MG_LEGACY_INTERFACE) /* 2014-02-21 */
-/* Return array of strings that represent valid configuration options.
-   For each option, option name and default value is returned, i.e. the
-   number of entries in the array equals to number_of_options x 2.
-   Array is NULL terminated. */
-/* Deprecated: Use mg_get_valid_options instead. */
-CIVETWEB_API const char **mg_get_valid_option_names(void);
-#endif
-
-
 struct mg_option {
 	const char *name;
 	int type;
@@ -886,12 +855,6 @@ CIVETWEB_API int mg_websocket_client_write(struct mg_connection *conn,
    Do not acquire this lock while holding mg_lock_context(). */
 CIVETWEB_API void mg_lock_connection(struct mg_connection *conn);
 CIVETWEB_API void mg_unlock_connection(struct mg_connection *conn);
-
-
-#if defined(MG_LEGACY_INTERFACE) /* 2014-06-21 */
-#define mg_lock mg_lock_connection
-#define mg_unlock mg_unlock_connection
-#endif
 
 
 /* Lock server context.  This lock may be used to protect resources
@@ -1255,16 +1218,6 @@ mg_download(const char *host,
 CIVETWEB_API void mg_close_connection(struct mg_connection *conn);
 
 
-#if defined(MG_LEGACY_INTERFACE) /* 2016-05-14 */
-/* File upload functionality. Each uploaded file gets saved into a temporary
-   file and MG_UPLOAD event is sent.
-   Return number of uploaded files.
-   Deprecated: Use mg_handle_form_request instead. */
-CIVETWEB_API int mg_upload(struct mg_connection *conn,
-                           const char *destination_dir);
-#endif
-
-
 /* This structure contains callback functions for handling form fields.
    It is used as an argument to mg_handle_form_request. */
 struct mg_form_data_handler {
@@ -1480,6 +1433,19 @@ mg_connect_websocket_client(const char *host,
                             mg_websocket_close_handler close_func,
                             void *user_data);
 
+CIVETWEB_API struct mg_connection *
+mg_connect_websocket_client_extensions(const char *host,
+                                       int port,
+                                       int use_ssl,
+                                       char *error_buffer,
+                                       size_t error_buffer_size,
+                                       const char *path,
+                                       const char *origin,
+                                       mg_websocket_data_handler data_func,
+                                       mg_websocket_close_handler close_func,
+                                       void *user_data,
+                                       const char *extensions);
+
 
 /* Connect to a TCP server as a client (can be used to connect to a HTTP server)
    Parameters:
@@ -1526,11 +1492,23 @@ CIVETWEB_API struct mg_connection *mg_connect_websocket_client_secure(
     mg_websocket_close_handler close_func,
     void *user_data);
 
+CIVETWEB_API struct mg_connection *
+mg_connect_websocket_client_secure_extensions(
+    const struct mg_client_options *client_options,
+    char *error_buffer,
+    size_t error_buffer_size,
+    const char *path,
+    const char *origin,
+    mg_websocket_data_handler data_func,
+    mg_websocket_close_handler close_func,
+    void *user_data,
+    const char *extensions);
 
 #if defined(MG_LEGACY_INTERFACE) /* 2019-11-02 */
 enum { TIMEOUT_INFINITE = -1 };
 #endif
 enum { MG_TIMEOUT_INFINITE = -1 };
+
 
 /* Wait for a response from the server
    Parameters:
@@ -1547,6 +1525,76 @@ CIVETWEB_API int mg_get_response(struct mg_connection *conn,
                                  char *ebuf,
                                  size_t ebuf_len,
                                  int timeout);
+
+
+/* mg_response_header_* functions can be used from server callbacks
+ * to prepare HTTP server response headers. Using this function will
+ * allow a callback to work with HTTP/1.x and HTTP/2.
+ */
+
+/* Initialize a new HTTP response
+ * Parameters:
+ *   conn: Current connection handle.
+ *   status: HTTP status code (e.g., 200 for "OK").
+ * Return:
+ *   0:    ok
+ *  -1:    parameter error
+ *  -2:    invalid connection type
+ *  -3:    invalid connection status
+ */
+CIVETWEB_API int mg_response_header_start(struct mg_connection *conn,
+                                          int status);
+
+
+/* Add a new HTTP response header line
+ * Parameters:
+ *   conn: Current connection handle.
+ *   header: Header name.
+ *   value: Header value.
+ *   value_len: Length of header value, excluding the terminating zero.
+ *              Use -1 for "strlen(value)".
+ * Return:
+ *   0:    ok
+ *  -1:    parameter error
+ *  -2:    invalid connection type
+ *  -3:    invalid connection status
+ *  -4:    too many headers
+ *  -5:    out of memory
+ */
+CIVETWEB_API int mg_response_header_add(struct mg_connection *conn,
+                                        const char *header,
+                                        const char *value,
+                                        int value_len);
+
+
+/* Add a complete header string (key + value).
+ * This function is less efficient as compared to mg_response_header_add,
+ * and should only be used to convert complete HTTP/1.x header lines.
+ * Parameters:
+ *   conn: Current connection handle.
+ *   http1_headers: Header line(s) in the form "name: value\r\n".
+ * Return:
+ *  >=0:   no error, number of header lines added
+ *  -1:    parameter error
+ *  -2:    invalid connection type
+ *  -3:    invalid connection status
+ *  -4:    too many headers
+ *  -5:    out of memory
+ */
+CIVETWEB_API int mg_response_header_add_lines(struct mg_connection *conn,
+                                              const char *http1_headers);
+
+
+/* Send http response
+ * Parameters:
+ *   conn: Current connection handle.
+ * Return:
+ *   0:    ok
+ *  -1:    parameter error
+ *  -2:    invalid connection type
+ *  -3:    invalid connection status
+ */
+CIVETWEB_API int mg_response_header_send(struct mg_connection *conn);
 
 
 /* Check which features where set when the civetweb library has been compiled.
