@@ -37,6 +37,8 @@
 #define NO_POPEN
 #define NO_NONCE_CHECK
 //#define NO_FILESYSTEMS TODO
+#define NO_FILES
+
 //[~] FlylinkDC++
 
 
@@ -110,8 +112,13 @@ enum {
 	/* Will only work, if USE_ZLIB is set. */
 	MG_FEATURES_COMPRESSION = 0x200u,
 
-	/* Collect server status information. */
-	/* Will only work, if USE_SERVER_STATS is set. */
+	/* HTTP/2 support enabled. */
+	MG_FEATURES_HTTP2 = 0x400u,
+
+	/* Support unix domain sockets. */
+	MG_FEATURES_X_DOMAIN_SOCKET = 0x800u,
+
+	/* Bit mask for all feature defines. */
 	MG_FEATURES_ALL = 0xFFFFu
 };
 
@@ -173,8 +180,11 @@ struct mg_request_info {
 
 	long long content_length; /* Length (in bytes) of the request body,
 	                             can be -1 if no length was given. */
-	int remote_port;          /* Client's port */
-	int is_ssl;               /* 1 if SSL-ed, 0 if not */
+	int remote_port;          /* Port at client side */
+	int server_port;          /* Port at server side (one of the listening
+	                             ports) */
+	int is_ssl;               /* 1 if HTTPS or WS is used (SSL/TLS used),
+	                             0 if not */
 	void *user_data;          /* User data pointer passed to mg_start() */
 	void *conn_data;          /* Connection-specific user data */
 
@@ -571,7 +581,7 @@ typedef void (*mg_websocket_close_handler)(const struct mg_connection *,
  */
 struct mg_websocket_subprotocols {
 	int nb_subprotocols;
-	char **subprotocols;
+	const char **subprotocols;
 };
 
 /* mg_set_websocket_handler
@@ -655,7 +665,14 @@ CIVETWEB_API void *mg_get_thread_pointer(const struct mg_connection *conn);
 
 
 /* Set user data for the current connection. */
-/* Note: This function is deprecated. Use the init_connection callback
+/* Note: CivetWeb callbacks use "struct mg_connection *conn" as input
+   when mg_read/mg_write callbacks are allowed in the callback,
+   while "const struct mg_connection *conn" is used as input in case
+   calling mg_read/mg_write is not allowed.
+   Setting the user connection data will modify the connection
+   object represented by mg_connection *, but it will not read from
+   or write to the connection. */
+/* Note: An alternative is to use the init_connection callback
    instead to initialize the user connection data pointer. It is
    reccomended to supply a pointer to some user defined data structure
    as conn_data initializer in init_connection. In case it is required
@@ -663,7 +680,7 @@ CIVETWEB_API void *mg_get_thread_pointer(const struct mg_connection *conn);
    data pointer in the user defined data structure and modify that
    pointer. In either case, after the init_connection callback, only
    calls to mg_get_user_connection_data should be required. */
-CIVETWEB_API void mg_set_user_connection_data(struct mg_connection *conn,
+CIVETWEB_API void mg_set_user_connection_data(const struct mg_connection *conn,
                                               void *data);
 
 
@@ -1441,10 +1458,10 @@ mg_connect_websocket_client_extensions(const char *host,
                                        size_t error_buffer_size,
                                        const char *path,
                                        const char *origin,
+                                       const char *extensions,
                                        mg_websocket_data_handler data_func,
                                        mg_websocket_close_handler close_func,
-                                       void *user_data,
-                                       const char *extensions);
+                                       void *user_data);
 
 
 /* Connect to a TCP server as a client (can be used to connect to a HTTP server)
@@ -1499,10 +1516,10 @@ mg_connect_websocket_client_secure_extensions(
     size_t error_buffer_size,
     const char *path,
     const char *origin,
+    const char *extensions,
     mg_websocket_data_handler data_func,
     mg_websocket_close_handler close_func,
-    void *user_data,
-    const char *extensions);
+    void *user_data);
 
 #if defined(MG_LEGACY_INTERFACE) /* 2019-11-02 */
 enum { TIMEOUT_INFINITE = -1 };
@@ -1664,6 +1681,15 @@ CIVETWEB_API int mg_get_system_info(char *buffer, int buflen);
 */
 CIVETWEB_API int
 mg_get_context_info(const struct mg_context *ctx, char *buffer, int buflen);
+
+
+/* Disable HTTP keep-alive on a per-connection basis.
+   Reference: https://github.com/civetweb/civetweb/issues/727
+   Parameters:
+     conn: Current connection handle.
+*/
+CIVETWEB_API void
+mg_disable_connection_keep_alive(struct mg_connection *conn);
 
 
 #if defined(MG_EXPERIMENTAL_INTERFACES)

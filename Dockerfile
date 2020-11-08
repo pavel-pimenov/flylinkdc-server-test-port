@@ -10,7 +10,7 @@ WORKDIR /usr/src/app
 COPY fly-server-loop ./
 COPY fly-server-test-port ./
 
-EXPOSE 37016
+EXPOSE 37015
 
 RUN chmod +x /usr/src/app/fly*
 

@@ -873,6 +873,9 @@ typedef unsigned short int in_port_t;
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(USE_X_DOM_SOCKET)
+#include <sys/un.h>
+#endif
 #endif
 
 #define vsnprintf_impl vsnprintf
@@ -1314,7 +1317,7 @@ mg_atomic_dec(volatile ptrdiff_t *addr)
 }
 
 
-#if defined(USE_SERVER_STATS)
+#if defined(USE_SERVER_STATS) || defined(STOP_FLAG_NEEDS_LOCK)
 static ptrdiff_t
 mg_atomic_add(volatile ptrdiff_t *addr, ptrdiff_t value)
 {
@@ -2468,6 +2471,7 @@ static const char month_names[][4] = {"Jan",
                                       "Dec"};
 #endif /* !NO_CACHING */
 
+
 /* Unified socket address. For IPv6 support, add IPv6 address structure in
  * the union u. */
 union usa {
@@ -2476,8 +2480,24 @@ union usa {
 #if defined(USE_IPV6)
 	struct sockaddr_in6 sin6;
 #endif
+#if defined(USE_X_DOM_SOCKET)
+	struct sockaddr_un sun;
+#endif
 };
 
+#if defined(USE_X_DOM_SOCKET)
+static unsigned short
+USA_IN_PORT_UNSAFE(union usa *s)
+{
+	if (s->sa.sa_family == AF_INET)
+		return s->sin.sin_port;
+#if defined(USE_IPV6)
+	if (s->sa.sa_family == AF_INET6)
+		return s->sin6.sin6_port;
+#endif
+	return 0;
+}
+#endif
 #if defined(USE_IPV6)
 #define USA_IN_PORT_UNSAFE(s)                                                  \
 	(((s)->sa.sa_family == AF_INET6) ? (s)->sin6.sin6_port : (s)->sin.sin_port)
@@ -3781,9 +3801,13 @@ mg_get_thread_pointer(const struct mg_connection *conn)
 
 
 void
-mg_set_user_connection_data(struct mg_connection *conn, void *data)
+mg_set_user_connection_data(const struct mg_connection *const_conn, void *data)
 {
-	if (conn != NULL) {
+	if (const_conn != NULL) {
+		/* Const cast, since "const struct mg_connection *" does not mean
+		 * the connection object is not modified. Here "const" is used,
+		 * to indicate mg_read/mg_write/mg_send/.. must not be called. */
+		struct mg_connection *conn = (struct mg_connection *)const_conn;
 		conn->request_info.conn_data = data;
 	}
 }
@@ -3857,6 +3881,10 @@ mg_get_server_ports(const struct mg_context *ctx,
 }
 
 
+#if defined(USE_X_DOM_SOCKET) && !defined(UNIX_DOMAIN_SOCKET_SERVER_NAME)
+#define UNIX_DOMAIN_SOCKET_SERVER_NAME "*"
+#endif
+
 static void
 sockaddr_to_string(char *buf, size_t len, const union usa *usa)
 {
@@ -3884,6 +3912,22 @@ sockaddr_to_string(char *buf, size_t len, const union usa *usa)
 		            NULL,
 		            0,
 		            NI_NUMERICHOST);
+	}
+#endif
+#if defined(USE_X_DOM_SOCKET)
+	else if (usa->sa.sa_family == AF_UNIX) {
+		/* TODO: Define a remote address for unix domain sockets.
+		 * This code will always return "localhost", identical to http+tcp:
+		getnameinfo(&usa->sa,
+		    sizeof(usa->sun),
+		    buf,
+		    (unsigned)len,
+		    NULL,
+		    0,
+		    NI_NUMERICHOST);
+		 */
+		strncpy(buf, UNIX_DOMAIN_SOCKET_SERVER_NAME, len);
+		buf[len] = 0;
 	}
 #endif
 }
@@ -4015,7 +4059,8 @@ mg_cry_internal_impl(const struct mg_connection *conn,
 	}
 }
 #else
-#error Must either enable filesystems or provide a custom mg_cry_internal_impl implementation
+//[-] FlylinkDC++
+//#error Must either enable filesystems or provide a custom mg_cry_internal_impl implementation
 #endif /* Externally provided function */
 
 
@@ -4160,7 +4205,6 @@ mg_construct_local_link(const struct mg_connection *conn,
 	if ((buflen < 1) || (buf == 0) || (conn == 0)) {
 		return -1;
 	} else {
-
 		int truncated = 0;
 		const struct mg_request_info *ri = &conn->request_info;
 
@@ -4170,14 +4214,37 @@ mg_construct_local_link(const struct mg_connection *conn,
 		    (define_uri != NULL)
 		        ? define_uri
 		        : ((ri->request_uri != NULL) ? ri->request_uri : ri->local_uri);
-		int port = (define_port > 0)
-		               ? define_port
-		               : htons(USA_IN_PORT_UNSAFE(&conn->client.lsa));
+		int port = (define_port > 0) ? define_port : ri->server_port;
 		int default_port = 80;
 
 		if (uri == NULL) {
 			return -1;
 		}
+
+#if defined(USE_X_DOM_SOCKET)
+		if (conn->client.lsa.sa.sa_family == AF_UNIX) {
+			/* TODO: Define and document a link for UNIX domain sockets. */
+			/* There seems to be no official standard for this.
+			 * Common uses seem to be "httpunix://", "http.unix://" or
+			 * "http+unix://" as a protocol definition string, followed by
+			 * "localhost" or "127.0.0.1" or "/tmp/unix/path" or
+			 * "%2Ftmp%2Funix%2Fpath" (url % encoded) or
+			 * "localhost:%2Ftmp%2Funix%2Fpath" (domain socket path as port) or
+			 * "" (completely skipping the server name part). In any case, the
+			 * last part is the server local path. */
+			const char *server_name = UNIX_DOMAIN_SOCKET_SERVER_NAME;
+			mg_snprintf(conn,
+			            &truncated,
+			            buf,
+			            buflen,
+			            "%s.unix://%s%s",
+			            proto,
+			            server_name,
+			            ri->local_uri);
+			default_port = 0;
+			return 0;
+		}
+#endif
 
 		if (define_proto) {
 			/* If we got a protocol name, use the default port accordingly. */
@@ -9491,6 +9558,13 @@ connect_socket(struct mg_context *ctx /* may be NULL */,
 		*sock = socket(PF_INET6, SOCK_STREAM, 0);
 	}
 #endif
+#if 0 /* Not available as client */
+#if defined(USE_X_DOM_SOCKET)
+	else if (ip_ver == 99) {
+		*sock = socket(AF_UNIX, SOCK_STREAM, 0);
+	}
+#endif
+#endif
 
 	if (*sock == INVALID_SOCKET) {
 		mg_snprintf(NULL,
@@ -10769,6 +10843,12 @@ parse_http_headers(char **buf, struct mg_header hdr[MG_MAX_HEADERS])
 			/* End of headers reached. */
 			break;
 		}
+
+		/* Drop all spaces after header name before : */
+		while (*dp == ' ') {
+			*dp = 0;
+			dp++;
+		}
 		if (*dp != ':') {
 			/* This is not a valid field. */
 			return -1;
@@ -10869,8 +10949,13 @@ static const struct mg_http_method_info http_methods[] = {
      * Section 9.1 of [RFC2616]). Responses to this
      * method MUST NOT be cached. */
 
+    /* Methods for write access to files on WEBDAV (RFC 2518) */
+    {"LOCK", 1, 1, 0, 0, 0},
+    {"UNLOCK", 1, 0, 0, 0, 0},
+    {"PROPPATCH", 1, 1, 0, 0, 0},
+
     /* Unsupported WEBDAV Methods: */
-    /* PROPPATCH, COPY, MOVE, LOCK, UNLOCK (RFC 2518) */
+    /* COPY, MOVE (RFC 2518) */
     /* + 11 methods from RFC 3253 */
     /* ORDERPATCH (RFC 3648) */
     /* ACL (RFC 3744) */
@@ -11409,7 +11494,7 @@ prepare_cgi_environment(struct mg_connection *conn,
 	addenv(env, "%s", "SERVER_PROTOCOL=HTTP/1.1");
 	addenv(env, "%s", "REDIRECT_STATUS=200"); /* For PHP */
 
-	addenv(env, "SERVER_PORT=%d", ntohs(USA_IN_PORT_UNSAFE(&conn->client.lsa)));
+	addenv(env, "SERVER_PORT=%d", conn->request_info.server_port);
 
 	sockaddr_to_string(src_addr, sizeof(src_addr), &conn->client.rsa);
 	addenv(env, "REMOTE_ADDR=%s", src_addr);
@@ -14898,6 +14983,18 @@ close_all_listening_sockets(struct mg_context *ctx)
 
 	for (i = 0; i < ctx->num_listening_sockets; i++) {
 		closesocket(ctx->listening_sockets[i].sock);
+#if defined(USE_X_DOM_SOCKET)
+		/* For unix domain sockets, the socket name represents a file that has
+		 * to be deleted. */
+		/* See
+		 * https://stackoverflow.com/questions/15716302/so-reuseaddr-and-af-unix
+		 */
+		if ((ctx->listening_sockets[i].lsa.sin.sin_family == AF_UNIX)
+		    && (ctx->listening_sockets[i].sock != INVALID_SOCKET)) {
+			IGNORE_UNUSED_RESULT(
+			    remove(ctx->listening_sockets[i].lsa.sun.sun_path));
+		}
+#endif
 		ctx->listening_sockets[i].sock = INVALID_SOCKET;
 	}
 	mg_free(ctx->listening_sockets);
@@ -15040,6 +15137,23 @@ parse_port_string(const struct vec *vec, struct socket *so, int *ip_version)
 			len = 0;
 		}
 
+#if defined(USE_X_DOM_SOCKET)
+
+	} else if (vec->ptr[0] == 'x') {
+		/* unix (linux) domain socket */
+		if (vec->len < sizeof(so->lsa.sun.sun_path)) {
+			len = vec->len;
+			so->lsa.sun.sun_family = AF_UNIX;
+			memset(so->lsa.sun.sun_path, 0, sizeof(so->lsa.sun.sun_path));
+			memcpy(so->lsa.sun.sun_path, (char *)vec->ptr + 1, vec->len - 1);
+			port = 0;
+			*ip_version = 99;
+		} else {
+			/* String too long */
+			len = 0;
+		}
+#endif
+
 	} else {
 		/* Parsing failure. */
 		len = 0;
@@ -15177,8 +15291,14 @@ set_ports_option(struct mg_context *phys_ctx)
 			continue;
 		}
 #endif
-
-		if ((so.sock = socket(so.lsa.sa.sa_family, SOCK_STREAM, 6))
+		/* Create socket. */
+		/* For a list of protocol numbers (e.g., TCP==6) see:
+		 * https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
+		 */
+		if ((so.sock =
+		         socket(so.lsa.sa.sa_family,
+		                SOCK_STREAM,
+		                (ip_version == 99) ? (/* LOCAL */ 0) : (/* TCP */ 6)))
 		    == INVALID_SOCKET) {
 
 			mg_cry_ctx_internal(phys_ctx,
@@ -15226,7 +15346,13 @@ set_ports_option(struct mg_context *phys_ctx)
 		}
 #endif
 
-		if (ip_version > 4) {
+#if defined(USE_X_DOM_SOCKET)
+		if (ip_version == 99) {
+			/* Unix domain socket */
+		} else
+#endif
+
+		    if (ip_version > 4) {
 /* Could be 6 for IPv6 onlyor 10 (4+6) for IPv4+IPv6 */
 #if defined(USE_IPV6)
 			if (ip_version > 6) {
@@ -15292,6 +15418,22 @@ set_ports_option(struct mg_context *phys_ctx)
 				                    "cannot bind to IPv6 %.*s: %d (%s)",
 				                    (int)vec.len,
 				                    vec.ptr,
+				                    (int)ERRNO,
+				                    strerror(errno));
+				closesocket(so.sock);
+				so.sock = INVALID_SOCKET;
+				continue;
+			}
+		}
+#endif
+#if defined(USE_X_DOM_SOCKET)
+		else if (so.lsa.sa.sa_family == AF_UNIX) {
+
+			len = sizeof(so.lsa.sun);
+			if (bind(so.sock, &so.lsa.sa, len) != 0) {
+				mg_cry_ctx_internal(phys_ctx,
+				                    "cannot bind to unix socket %s: %d (%s)",
+				                    so.lsa.sun.sun_path,
 				                    (int)ERRNO,
 				                    strerror(errno));
 				closesocket(so.sock);
@@ -15515,7 +15657,8 @@ log_access(const struct mg_connection *conn)
 	}
 }
 #else
-#error Must either enable filesystems or provide a custom log_access implementation
+// [-] FlylinkDC++
+//#error Must either enable filesystems or provide a custom log_access implementation
 #endif /* Externally provided function */
 
 
@@ -16966,16 +17109,20 @@ reset_per_request_attributes(struct mg_connection *conn)
 
 
 static int
-set_tcp_nodelay(SOCKET sock, int nodelay_on)
+set_tcp_nodelay(const struct socket *so, int nodelay_on)
 {
-	if (setsockopt(sock,
-	               IPPROTO_TCP,
-	               TCP_NODELAY,
-	               (SOCK_OPT_TYPE)&nodelay_on,
-	               sizeof(nodelay_on))
-	    != 0) {
-		/* Error */
-		return 1;
+	if ((so->lsa.sa.sa_family == AF_INET)
+	    || (so->lsa.sa.sa_family == AF_INET6)) {
+		/* Only for TCP sockets */
+		if (setsockopt(so->sock,
+		               IPPROTO_TCP,
+		               TCP_NODELAY,
+		               (SOCK_OPT_TYPE)&nodelay_on,
+		               sizeof(nodelay_on))
+		    != 0) {
+			/* Error */
+			return 1;
+		}
 	}
 	/* OK */
 	return 0;
@@ -18175,10 +18322,10 @@ mg_connect_websocket_client_impl(const struct mg_client_options *client_options,
                                  size_t error_buffer_size,
                                  const char *path,
                                  const char *origin,
+                                 const char *extensions,
                                  mg_websocket_data_handler data_func,
                                  mg_websocket_close_handler close_func,
-                                 void *user_data,
-                                 const char *extensions)
+                                 void *user_data)
 {
 	struct mg_connection *conn = NULL;
 
@@ -18399,10 +18546,10 @@ mg_connect_websocket_client(const char *host,
 	                                        error_buffer_size,
 	                                        path,
 	                                        origin,
+	                                        NULL,
 	                                        data_func,
 	                                        close_func,
-	                                        user_data,
-	                                        NULL);
+	                                        user_data);
 }
 
 
@@ -18426,10 +18573,10 @@ mg_connect_websocket_client_secure(
 	                                        error_buffer_size,
 	                                        path,
 	                                        origin,
+	                                        NULL,
 	                                        data_func,
 	                                        close_func,
-	                                        user_data,
-	                                        NULL);
+	                                        user_data);
 }
 
 struct mg_connection *
@@ -18440,10 +18587,10 @@ mg_connect_websocket_client_extensions(const char *host,
                                        size_t error_buffer_size,
                                        const char *path,
                                        const char *origin,
+                                       const char *extensions,
                                        mg_websocket_data_handler data_func,
                                        mg_websocket_close_handler close_func,
-                                       void *user_data,
-                                       const char *extensions)
+                                       void *user_data)
 {
 	struct mg_client_options client_options;
 	memset(&client_options, 0, sizeof(client_options));
@@ -18456,10 +18603,10 @@ mg_connect_websocket_client_extensions(const char *host,
 	                                        error_buffer_size,
 	                                        path,
 	                                        origin,
+	                                        extensions,
 	                                        data_func,
 	                                        close_func,
-	                                        user_data,
-	                                        extensions);
+	                                        user_data);
 }
 
 struct mg_connection *
@@ -18469,10 +18616,10 @@ mg_connect_websocket_client_secure_extensions(
     size_t error_buffer_size,
     const char *path,
     const char *origin,
+    const char *extensions,
     mg_websocket_data_handler data_func,
     mg_websocket_close_handler close_func,
-    void *user_data,
-    const char *extensions)
+    void *user_data)
 {
 	if (!client_options) {
 		return NULL;
@@ -18483,10 +18630,10 @@ mg_connect_websocket_client_secure_extensions(
 	                                        error_buffer_size,
 	                                        path,
 	                                        origin,
+	                                        extensions,
 	                                        data_func,
 	                                        close_func,
-	                                        user_data,
-	                                        extensions);
+	                                        user_data);
 }
 
 /* Prepare connection data structure */
@@ -18978,6 +19125,9 @@ worker_thread_run(struct mg_connection *conn)
 		conn->request_info.remote_port =
 		    ntohs(USA_IN_PORT_UNSAFE(&conn->client.rsa));
 
+		conn->request_info.server_port =
+		    ntohs(USA_IN_PORT_UNSAFE(&conn->client.lsa));
+
 		sockaddr_to_string(conn->request_info.remote_addr,
 		                   sizeof(conn->request_info.remote_addr),
 		                   &conn->client.rsa);
@@ -19146,24 +19296,27 @@ accept_new_connection(const struct socket *listener, struct mg_context *ctx)
 		}
 
 #if !defined(__ZEPHYR__)
-		/* Set TCP keep-alive. This is needed because if HTTP-level
-		 * keep-alive
-		 * is enabled, and client resets the connection, server won't get
-		 * TCP FIN or RST and will keep the connection open forever. With
-		 * TCP keep-alive, next keep-alive handshake will figure out that
-		 * the client is down and will close the server end.
-		 * Thanks to Igor Klopov who suggested the patch. */
-		if (setsockopt(so.sock,
-		               SOL_SOCKET,
-		               SO_KEEPALIVE,
-		               (SOCK_OPT_TYPE)&on,
-		               sizeof(on))
-		    != 0) {
-			mg_cry_ctx_internal(
-			    ctx,
-			    "%s: setsockopt(SOL_SOCKET SO_KEEPALIVE) failed: %s",
-			    __func__,
-			    strerror(ERRNO));
+		if ((so.lsa.sa.sa_family == AF_INET)
+		    || (so.lsa.sa.sa_family == AF_INET6)) {
+			/* Set TCP keep-alive for TCP sockets (IPv4 and IPv6).
+			 * This is needed because if HTTP-level keep-alive
+			 * is enabled, and client resets the connection, server won't get
+			 * TCP FIN or RST and will keep the connection open forever. With
+			 * TCP keep-alive, next keep-alive handshake will figure out that
+			 * the client is down and will close the server end.
+			 * Thanks to Igor Klopov who suggested the patch. */
+			if (setsockopt(so.sock,
+			               SOL_SOCKET,
+			               SO_KEEPALIVE,
+			               (SOCK_OPT_TYPE)&on,
+			               sizeof(on))
+			    != 0) {
+				mg_cry_ctx_internal(
+				    ctx,
+				    "%s: setsockopt(SOL_SOCKET SO_KEEPALIVE) failed: %s",
+				    __func__,
+				    strerror(ERRNO));
+			}
 		}
 #endif
 
@@ -19176,7 +19329,7 @@ accept_new_connection(const struct socket *listener, struct mg_context *ctx)
 		 */
 		if ((ctx->dd.config[CONFIG_TCP_NODELAY] != NULL)
 		    && (!strcmp(ctx->dd.config[CONFIG_TCP_NODELAY], "1"))) {
-			if (set_tcp_nodelay(so.sock, 1) != 0) {
+			if (set_tcp_nodelay(&so, 1) != 0) {
 				mg_cry_ctx_internal(
 				    ctx,
 				    "%s: setsockopt(IPPROTO_TCP TCP_NODELAY) failed: %s",
@@ -19239,10 +19392,20 @@ master_thread_run(struct mg_context *ctx)
 		tls.user_ptr = NULL;
 	}
 
+	/* Lua background script "start" event */
+#if defined(USE_LUA)
+	if (ctx->lua_background_state) {
+		lua_State *lstate = (lua_State *)ctx->lua_background_state;
+		/* call "start()" in Lua */
+		lua_getglobal(lstate, "start");
+		(void)lua_pcall(lstate, /* args */ 0, /* results */ 0, 0);
+	}
+#endif
+
 	/* Server starts *now* */
 	ctx->start_time = time(NULL);
 
-	/* Start the server */
+	/* Server accept loop */
 	pfd = ctx->listening_socket_fds;
 	while (STOP_FLAG_IS_ZERO(&ctx->stop_flag)) {
 		for (i = 0; i < ctx->num_listening_sockets; i++) {
@@ -19294,12 +19457,9 @@ master_thread_run(struct mg_context *ctx)
 	/* Free Lua state of lua background task */
 	if (ctx->lua_background_state) {
 		lua_State *lstate = (lua_State *)ctx->lua_background_state;
-		lua_getglobal(lstate, LUABACKGROUNDPARAMS);
-		if (lua_istable(lstate, -1)) {
-			reg_boolean(lstate, "shutdown", 1);
-			lua_pop(lstate, 1);
-			mg_sleep(2);
-		}
+		/* call "stop()" in Lua */
+		lua_getglobal(lstate, "stop");
+		(void)lua_pcall(lstate, /* args */ 0, /* results */ 0, 0);
 		lua_close(lstate);
 		ctx->lua_background_state = 0;
 	}
@@ -19830,10 +19990,14 @@ static
 		struct vec opt_vec;
 		struct vec eq_vec;
 		const char *sparams;
-		lua_State *state = mg_prepare_lua_context_script(
+
+		/* Create a Lua state, load all standard libraries and the mg table */
+		lua_State *state = mg_lua_context_script_prepare(
 		    ctx->dd.config[LUA_BACKGROUND_SCRIPT], ctx, ebuf, sizeof(ebuf));
 		if (!state) {
-			mg_cry_ctx_internal(ctx, "lua_background_script error: %s", ebuf);
+			mg_cry_ctx_internal(ctx,
+			                    "lua_background_script load error: %s",
+			                    ebuf);
 			if ((error != NULL) && (error->text_buffer_size > 0)) {
 				mg_snprintf(NULL,
 				            NULL, /* No truncation check for error buffers */
@@ -19847,20 +20011,51 @@ static
 			pthread_setspecific(sTlsKey, NULL);
 			return NULL;
 		}
-		ctx->lua_background_state = (void *)state;
 
-		lua_newtable(state);
-		reg_boolean(state, "shutdown", 0);
-
+		/* Add a table with parameters into mg.params */
 		sparams = ctx->dd.config[LUA_BACKGROUND_SCRIPT_PARAMS];
+		if (sparams && sparams[0]) {
+			lua_getglobal(state, "mg");
+			lua_pushstring(state, "params");
+			lua_newtable(state);
 
-		while ((sparams = next_option(sparams, &opt_vec, &eq_vec)) != NULL) {
-			reg_llstring(
-			    state, opt_vec.ptr, opt_vec.len, eq_vec.ptr, eq_vec.len);
-			if (mg_strncasecmp(sparams, opt_vec.ptr, opt_vec.len) == 0)
-				break;
+			while ((sparams = next_option(sparams, &opt_vec, &eq_vec))
+			       != NULL) {
+				reg_llstring(
+				    state, opt_vec.ptr, opt_vec.len, eq_vec.ptr, eq_vec.len);
+				if (mg_strncasecmp(sparams, opt_vec.ptr, opt_vec.len) == 0)
+					break;
+			}
+			lua_rawset(state, -3);
+			lua_pop(state, 1);
 		}
-		lua_setglobal(state, LUABACKGROUNDPARAMS);
+
+		/* Call script */
+		state = mg_lua_context_script_run(state,
+		                                  ctx->dd.config[LUA_BACKGROUND_SCRIPT],
+		                                  ctx,
+		                                  ebuf,
+		                                  sizeof(ebuf));
+		if (!state) {
+			mg_cry_ctx_internal(ctx,
+			                    "lua_background_script start error: %s",
+			                    ebuf);
+			if ((error != NULL) && (error->text_buffer_size > 0)) {
+				mg_snprintf(NULL,
+				            NULL, /* No truncation check for error buffers */
+				            error->text,
+				            error->text_buffer_size,
+				            "Error in script %s: %s",
+				            config_options[DOCUMENT_ROOT].name,
+				            ebuf);
+			}
+			free_context(ctx);
+			pthread_setspecific(sTlsKey, NULL);
+			return NULL;
+		}
+
+		/* state remains valid */
+		ctx->lua_background_state = (void *)state;
 
 	} else {
 		ctx->lua_background_state = 0;
@@ -20420,26 +20615,26 @@ mg_check_feature(unsigned feature)
 #if defined(USE_ZLIB)
 	                                    | MG_FEATURES_COMPRESSION
 #endif
+#if defined(USE_HTTP2)
+	                                    | MG_FEATURES_HTTP2
+#endif
+#if defined(USE_X_DOM_SOCKET)
+	                                    | MG_FEATURES_X_DOMAIN_SOCKET
+#endif
 
 /* Set some extra bits not defined in the API documentation.
  * These bits may change without further notice. */
 #if defined(MG_LEGACY_INTERFACE)
-	                                    | 0x00008000u
+	                                    | 0x80000000u
 #endif
 #if defined(MG_EXPERIMENTAL_INTERFACES)
-	                                    | 0x00004000u
+	                                    | 0x40000000u
+#endif
+#if !defined(NO_RESPONSE_BUFFERING)
+	                                    | 0x20000000u
 #endif
 #if defined(MEMORY_DEBUGGING)
-	                                    | 0x00001000u
-#endif
-#if defined(USE_TIMERS)
-	                                    | 0x00020000u
-#endif
-#if !defined(NO_NONCE_CHECK)
-	                                    | 0x00040000u
-#endif
-#if !defined(NO_POPEN)
-	                                    | 0x00080000u
+	                                    | 0x10000000u
 #endif
 	    ;
 	return (feature & feature_set);
@@ -20627,29 +20822,30 @@ mg_get_system_info(char *buffer, int buflen)
 #endif
 	}
 
-	/* Build date */
+	/* Build identifier. If BUILD_DATE is not set, __DATE__ will be used. */
 	{
+#if defined(BUILD_DATE)
+		const char *bd = BUILD_DATE;
+#else
 #if defined(GCC_DIAGNOSTIC)
 #if GCC_VERSION >= 40900
 #pragma GCC diagnostic push
-/* Disable bogus compiler warning -Wdate-time, appeared in gcc5 */
+		/* Disable idiotic compiler warning -Wdate-time, appeared in gcc5. This does not
+		* work in some versions. If "BUILD_DATE" is defined to some string, it is used
+		* instead of __DATE__. */
 #pragma GCC diagnostic ignored "-Wdate-time"
 #endif
 #endif
-#ifdef BUILD_DATE
-		const char *bd = BUILD_DATE;
-#else
 		const char *bd = __DATE__;
-#endif
-
-		mg_snprintf(
-		    NULL, NULL, block, sizeof(block), ",%s\"build\" : \"%s\"", eol, bd);
-
 #if defined(GCC_DIAGNOSTIC)
 #if GCC_VERSION >= 40900
 #pragma GCC diagnostic pop
 #endif
 #endif
+#endif
+
+		mg_snprintf(
+		    NULL, NULL, block, sizeof(block), ",%s\"build\" : \"%s\"", eol, bd);
 
 		system_info_length += mg_str_append(&buffer, end, block);
 	}
@@ -20992,6 +21188,15 @@ mg_get_context_info(const struct mg_context *ctx, char *buffer, int buflen)
 	}
 	return 0;
 #endif
+}
+
+
+void mg_disable_connection_keep_alive(struct mg_connection *conn)
+{
+  /* https://github.com/civetweb/civetweb/issues/727 */
+  if (conn != NULL) {
+    conn->must_close = 1;
+  }
 }
 
 

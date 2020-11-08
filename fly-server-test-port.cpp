@@ -356,7 +356,7 @@ int main(int argc, char* argv[])
 	mkdir("log-test-port");
 
 #endif
-	std::cout << std::endl << "* FlylinkDC++ server for test port r727 (c) 2012-2019 pavel.pimenov@gmail.com " << std::endl
+	std::cout << std::endl << "* FlylinkDC++ server for test port r727 (c) 2012-2020 pavel.pimenov@gmail.com " << std::endl
 		<< "  - civetweb " << CIVETWEB_VERSION << " (c) https://github.com/civetweb/civetweb" << std::endl
 		<< std::endl << "Usage: fly-server-test-port [-disable-syslog] [-disable-log-test-port]"
 		<< std::endl << std::endl;
@@ -364,7 +364,7 @@ int main(int argc, char* argv[])
 
 	const char *options[] = {
 		//	  "document_root", ".",
-			  "listening_ports", "37016",
+			  "listening_ports", "37015",
 			  "num_threads", "5",
 			  "enable_directory_listing", "no", 0
 	};
