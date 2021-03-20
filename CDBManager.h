@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-//(c) 2007-2019 pavel.pimenov@gmail.com
+//(c) 2007-2021 pavel.pimenov@gmail.com
 //-----------------------------------------------------------------------------
 #ifndef CDBManager_H
 #define CDBManager_H
@@ -16,12 +16,11 @@
 #include <cstring>
 #include <stdint.h>
 
+#include "zlib-ng/zlib-ng.h"
 #ifdef _WIN32
 #include <process.h>
-#include "zlib/zlib.h"
 #else
 #include <sys/time.h>
-#include <zlib.h>
 #include <errno.h>
 #endif
 

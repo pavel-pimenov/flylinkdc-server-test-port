@@ -16,14 +16,14 @@
     <Filter Include="Source Files\json">
       <UniqueIdentifier>{c569b824-fcd5-47e1-99f0-e3a5103cc095}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\zlib">
-      <UniqueIdentifier>{2ab4e7cc-b54b-4586-a1dc-165f8b6208ce}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Header Files\zlib">
-      <UniqueIdentifier>{0a08edb0-b40e-4784-b0c6-18b2ab1893f1}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Header Files\jsoncpp">
       <UniqueIdentifier>{f3569711-9ea4-4f0b-84e0-dd237edd8999}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\zlib-ng">
+      <UniqueIdentifier>{2ab4e7cc-b54b-4586-a1dc-165f8b6208ce}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\zlib-ng">
+      <UniqueIdentifier>{0a08edb0-b40e-4784-b0c6-18b2ab1893f1}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -32,51 +32,6 @@
     </ClCompile>
     <ClCompile Include="CDBManager.cpp">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\adler32.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\compress.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\crc32.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\deflate.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\gzclose.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\gzlib.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\gzread.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\gzwrite.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\infback.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\inffast.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\inflate.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\inftrees.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\trees.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\uncompr.c">
-      <Filter>Source Files\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib\zutil.c">
-      <Filter>Source Files\zlib</Filter>
     </ClCompile>
     <ClCompile Include="jsoncpp\jsoncpp.cpp">
       <Filter>Source Files\json</Filter>
@@ -87,6 +42,75 @@
     <ClCompile Include="civetweb.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="zlib-ng\adler32.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\chunkset.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\compare258.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\compress.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\crc32.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\crc32_comb.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\deflate.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\deflate_fast.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\deflate_medium.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\deflate_quick.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\deflate_slow.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\functable.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\gzlib.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\gzread.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\gzwrite.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\infback.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\inffast.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\inflate.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\inftrees.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\insert_string.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\trees.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\uncompr.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib-ng\zutil.c">
+      <Filter>Source Files\zlib-ng</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CDBManager.h">
@@ -94,39 +118,6 @@
     </ClInclude>
     <ClInclude Include="Thread.h">
       <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\crc32.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\deflate.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\gzguts.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\inffast.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\inffixed.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\inflate.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\inftrees.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\trees.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\zconf.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\zlib.h">
-      <Filter>Header Files\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib\zutil.h">
-      <Filter>Header Files\zlib</Filter>
     </ClInclude>
     <ClInclude Include="debug.h">
       <Filter>Header Files</Filter>
@@ -139,6 +130,84 @@
     </ClInclude>
     <ClInclude Include="civetweb.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\adler32_p.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\chunkset_tpl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\crc32_comb_tbl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\crc32_p.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\crc32_tbl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\deflate.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\deflate_p.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\fallback_builtins.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\functable.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\gzguts.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\inffast.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\inffixed_tbl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\inflate.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\inflate_p.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\inftrees.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\insert_string_tpl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\match_tpl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\trees.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\trees_emit.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\trees_tbl.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\zbuild.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\zconf-ng.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\zendian.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\zlib-ng.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\zutil.h">
+      <Filter>Header Files\zlib-ng</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib-ng\zutil_p.h">
+      <Filter>Header Files\zlib-ng</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

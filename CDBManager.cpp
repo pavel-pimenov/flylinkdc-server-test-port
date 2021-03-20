@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-//(c) 2007-2019 pavel.pimenov@gmail.com
+//(c) 2007-2021 pavel.pimenov@gmail.com
 //-----------------------------------------------------------------------------
 
 #include <stdio.h>
@@ -52,7 +52,7 @@ static void set_socket_opt(SOCKET p_sock, int p_option, int p_val)
       std::cout << "set_socket_opt option = "<< p_option << " val = " << p_val << " failed!\n";
   }
 }
-
+//==========================================================================
 static void send_udp_tcp_test_port(const std::string& p_PID, const std::string& p_CID, const std::string& p_ip, const string& p_port, bool p_is_tcp)
 {
 #ifdef _DEBUG
@@ -392,7 +392,7 @@ void CFlyServerContext::flush_log_array(bool p_is_force)
 	if (g_log_array)
 	{
 #ifndef _DEBUG
-		if (g_log_array->size() > 200 || p_is_force)
+		if (g_log_array->size() > 50 || p_is_force)
 #else
 		if (g_log_array->size() > 0 || p_is_force)
 #endif
@@ -437,10 +437,10 @@ void CFlyServerContext::run_thread_log()
 //========================================================================================================
 bool zlib_compress(const char* p_source, size_t p_len, std::vector<unsigned char>& p_compress, int& p_zlib_result, int p_level /*= 9*/)
 {
-	unsigned long l_dest_length = 0;
-	l_dest_length = compressBound(p_len) + 2;
+	auto l_dest_length = zng_compressBound(p_len) + 2;
 	p_compress.resize(l_dest_length);
-	p_zlib_result = compress2(p_compress.data(), &l_dest_length, (uint8_t*)p_source, p_len, p_level);
+
+	p_zlib_result = zng_compress2(p_compress.data(), &l_dest_length, (uint8_t*)p_source, p_len, p_level);
 	if (p_zlib_result == Z_OK) // TODO - Check memory
 	{
 #ifdef _DEBUG
@@ -460,7 +460,7 @@ bool zlib_compress(const char* p_source, size_t p_len, std::vector<unsigned char
 //========================================================================================================
 bool zlib_uncompress(const uint8_t* p_zlib_source, size_t p_zlib_len, std::vector<unsigned char>& p_decompress)
 {
-	unsigned long l_decompress_size = p_zlib_len * 3;
+	auto l_decompress_size = p_zlib_len * 3;
 	if (p_zlib_len >= 2 && p_zlib_source[0] == 0x78) // zlib контент?
 													 // && (unsigned char)p_zlib_source[1] == 0x9C  этот код может быть другим
 	{
@@ -478,7 +478,7 @@ bool zlib_uncompress(const uint8_t* p_zlib_source, size_t p_zlib_len, std::vecto
 		p_decompress.resize(l_decompress_size);
 		while (1)
 		{
-			const int l_un_compress_result = uncompress(p_decompress.data(), &l_decompress_size, p_zlib_source, p_zlib_len);
+			const int l_un_compress_result = zng_uncompress(p_decompress.data(), &l_decompress_size, p_zlib_source, p_zlib_len);
 			if (l_un_compress_result == Z_BUF_ERROR)
 			{
 				l_decompress_size *= 2;

@@ -574,7 +574,7 @@ public:
 // be used by...
 #if defined(JSONCPP_DISABLE_DLL_INTERFACE_WARNING)
 #pragma warning(push)
-#pragma warning(disable : 4251)
+#pragma warning(disable : 4251 4275)
 #endif // if defined(JSONCPP_DISABLE_DLL_INTERFACE_WARNING)
 
 #pragma pack(push, 8)
@@ -1442,8 +1442,8 @@ public:
    *  because the returned references/pointers can be used
    *  to change state of the base class.
    */
-  reference operator*() { return deref(); }
-  pointer operator->() { return &deref(); }
+  reference operator*() const { return const_cast<reference>(deref()); }
+  pointer operator->() const { return const_cast<pointer>(&deref()); }
 };
 
 inline void swap(Value& a, Value& b) { a.swap(b); }
@@ -2000,6 +2000,8 @@ public:
    *  - Number of precision digits for formatting of real values.
    *  - "precisionType": "significant"(default) or "decimal"
    *  - Type of precision for formatting of real values.
+   *  - "emitUTF8": false or true
+   *  - If true, outputs raw UTF8 strings instead of escaping them.
 
    *  You can examine 'settings_` yourself
    *  to see the defaults. You can also write and read them just like any
