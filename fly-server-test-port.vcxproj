@@ -103,9 +103,6 @@
     <ClCompile Include="zlib-ng\deflate_quick.c" />
     <ClCompile Include="zlib-ng\deflate_slow.c" />
     <ClCompile Include="zlib-ng\functable.c" />
-    <ClCompile Include="zlib-ng\gzlib.c" />
-    <ClCompile Include="zlib-ng\gzread.c" />
-    <ClCompile Include="zlib-ng\gzwrite.c" />
     <ClCompile Include="zlib-ng\infback.c" />
     <ClCompile Include="zlib-ng\inffast.c" />
     <ClCompile Include="zlib-ng\inflate.c" />
@@ -131,7 +128,6 @@
     <ClInclude Include="zlib-ng\deflate_p.h" />
     <ClInclude Include="zlib-ng\fallback_builtins.h" />
     <ClInclude Include="zlib-ng\functable.h" />
-    <ClInclude Include="zlib-ng\gzguts.h" />
     <ClInclude Include="zlib-ng\inffast.h" />
     <ClInclude Include="zlib-ng\inffixed_tbl.h" />
     <ClInclude Include="zlib-ng\inflate.h" />

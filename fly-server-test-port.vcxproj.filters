@@ -78,15 +78,6 @@
     <ClCompile Include="zlib-ng\functable.c">
       <Filter>Source Files\zlib-ng</Filter>
     </ClCompile>
-    <ClCompile Include="zlib-ng\gzlib.c">
-      <Filter>Source Files\zlib-ng</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib-ng\gzread.c">
-      <Filter>Source Files\zlib-ng</Filter>
-    </ClCompile>
-    <ClCompile Include="zlib-ng\gzwrite.c">
-      <Filter>Source Files\zlib-ng</Filter>
-    </ClCompile>
     <ClCompile Include="zlib-ng\infback.c">
       <Filter>Source Files\zlib-ng</Filter>
     </ClCompile>
@@ -156,9 +147,6 @@
       <Filter>Header Files\zlib-ng</Filter>
     </ClInclude>
     <ClInclude Include="zlib-ng\functable.h">
-      <Filter>Header Files\zlib-ng</Filter>
-    </ClInclude>
-    <ClInclude Include="zlib-ng\gzguts.h">
       <Filter>Header Files\zlib-ng</Filter>
     </ClInclude>
     <ClInclude Include="zlib-ng\inffast.h">

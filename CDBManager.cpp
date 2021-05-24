@@ -4,7 +4,7 @@
 
 #include <stdio.h>
 #include "CDBManager.h"
-#include "civetweb.h"
+#include "civetweb/civetweb.h"
 
 #ifdef _WIN32
 #define snprintf _snprintf
@@ -56,7 +56,6 @@ static void set_socket_opt(SOCKET p_sock, int p_option, int p_val)
 static void send_udp_tcp_test_port(const std::string& p_PID, const std::string& p_CID, const std::string& p_ip, const string& p_port, bool p_is_tcp)
 {
 #ifdef _DEBUG
-#ifdef _WIN32
 	if (p_is_tcp)
 	{
 		std::cout << "TCP test_port - ip = " << p_ip << ":" << p_port << " CID = " << p_CID << " PID = " << p_PID << std::endl;
@@ -65,7 +64,6 @@ static void send_udp_tcp_test_port(const std::string& p_PID, const std::string& 
 	{
 		std::cout << "UDP test_port - ip = " << p_ip << ":" << p_port << " CID = " << p_CID << " PID = " << p_PID <<  std::endl;
 	}
-#endif
 #endif
 	const unsigned short l_port = atoi(p_port.c_str());
 	const string l_header = "$FLY-TEST-PORT " + p_CID + p_ip + ':' + p_port + "|";
@@ -122,24 +120,26 @@ static void send_udp_tcp_test_port(const std::string& p_PID, const std::string& 
 	}
 }
 //==========================================================================
-static void* thread_proc_tcp_test_port(void* p_param)
+static void* thread_proc_udp_tcp_test_port(void* p_param)
 {
 	static volatile LONG g_count_thread = 0;
+	static volatile unsigned g_count_all = 0;
 	CFlySafeGuard l_call_deep(g_count_thread); // TODO - может считать число потоков через ОС
 	string l_str_deep_call(LONG(l_call_deep), '*');
 	std::unique_ptr<CFlyPortTestThreadInfo> l_info(reinterpret_cast<CFlyPortTestThreadInfo*>(p_param));
 	for (int i = 0; i < l_info->m_ports.size(); ++i)
 	{
 		send_udp_tcp_test_port(l_info->m_PID, l_info->m_CID, l_info->m_ip, l_info->m_ports[i].first, l_info->m_ports[i].second);
-#ifdef _WIN32
 		std::cout <<  "[" << l_str_deep_call << "] " <<
+			          "[" << ++g_count_all << "] " <<
 		          l_info->get_type_port(i) << " port-thread-test ip = " << l_info->m_ip << ":" << l_info->m_ports[i].first <<
 		          " CID = " << l_info->m_CID << " PID = " << l_info->m_PID << std::endl;
-#else
+#ifndef _WIN32
 		if (g_setup_syslog_disable == false)
 		{
-			syslog(LOG_NOTICE, "[%s] %s-port-thread-test %s:%s CID = %s PID = %s",
+			syslog(LOG_NOTICE, "[%s][%u] %s-port-thread-test %s:%s CID = %s PID = %s",
 			       l_str_deep_call.c_str(),
+				   ++g_count_all,
 			       l_info->get_type_port(i),
 			       l_info->m_ip.c_str(),
 			       l_info->m_ports[i].first.c_str(),
@@ -193,7 +193,7 @@ static string process_test_port(const CFlyServerContext& p_flyserver_cntx)
 				l_info->m_ports.push_back(std::make_pair(l_port, true));
 			}
 			// Создадим поток для теста TCP
-			if (mg_start_thread(thread_proc_tcp_test_port, l_info))
+			if (mg_start_thread(thread_proc_udp_tcp_test_port, l_info))
 			{
 				delete l_info;
 			}
@@ -380,9 +380,8 @@ void CFlyServerContext::send_syslog() const
 			std::cout << std::endl;
 #ifndef _WIN32 // Only in linux
 		syslog(LOG_NOTICE, "%s", l_log_buf);
-#else
-		std::cout << l_log_buf << std::endl;
 #endif
+		std::cout << l_log_buf << std::endl;
 	}
 }
 
