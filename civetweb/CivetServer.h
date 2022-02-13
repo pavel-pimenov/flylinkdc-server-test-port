@@ -72,7 +72,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handleGet(CivetServer *server,
@@ -93,7 +93,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handlePost(CivetServer *server,
@@ -114,7 +114,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handleHead(CivetServer *server,
@@ -135,7 +135,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handlePut(CivetServer *server,
@@ -156,7 +156,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handleDelete(CivetServer *server,
@@ -177,7 +177,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handleOptions(CivetServer *server,
@@ -198,7 +198,7 @@ class CIVETWEB_CXX_API CivetHandler
 	 *
 	 * @param server - the calling server
 	 * @param conn - the connection information
-	 * @param http - pointer to return status code
+	 * @param status_code - pointer to return status code
 	 * @returns true if implemented, false otherwise
 	 */
 	virtual bool handlePatch(CivetServer *server,
@@ -486,6 +486,13 @@ class CIVETWEB_CXX_API CivetServer
 	 */
 	static const char *getHeader(struct mg_connection *conn,
 	                             const std::string &headerName);
+
+	/**
+	 * getMethod(struct mg_connection *conn)
+	 * @param conn - the connection information
+	 * @returns method of HTTP request
+	 */
+	static const char *getMethod(struct mg_connection *conn);
 
 	/**
 	 * getParam(struct mg_connection *conn, const char *, std::string &, size_t)
