@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  test-port:
+    build: test-port/
+    command: /usr/src/app/fly-server-loop -disable-syslog -disable-log-test-port
+    ports:
+      - 37015:37015
+#  ptokax:
+#    build: ptokax/
+#    command: python ./client.py
+#    network_mode: host

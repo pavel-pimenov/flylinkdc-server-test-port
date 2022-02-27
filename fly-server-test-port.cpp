@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-//(c) 2007-2018 pavel.pimenov@gmail.com
+//(c) 2007-2022 pavel.pimenov@gmail.com
 //-----------------------------------------------------------------------------
 
 #include <stdio.h>
@@ -330,16 +330,23 @@ public:
 //======================================================================================
 int main(int argc, char* argv[])
 {
+	std::cout << std::endl << "* FlylinkDC++ server for test port (c) 2012-2022 pavel.pimenov@gmail.com " << std::endl
+		<< "  - civetweb " << CIVETWEB_VERSION << " (c) https://github.com/civetweb/civetweb" << std::endl
+		<< std::endl << "Usage: fly-server-test-port [-disable-syslog] [-disable-log-test-port]"
+		<< std::endl << std::endl;
 	for (int i = 1; i < argc; i++)
 	{
 		const std::string l_argv = argv[i];
+		std::cout << "* try: " << l_argv << std::endl;
 		if (l_argv == "-disable-log-test-port")
 		{
 			g_setup_log_disable_test_port = true;
+			std::cout << "*[+] " << l_argv << std::endl;
 		}
-		else if (l_argv == "-disable-syslog")
+		if (l_argv == "-disable-syslog")
 		{
 			g_setup_syslog_disable = true;
+			std::cout << "*[+] " << l_argv << std::endl;
 		}
 	}
 	// Setup signal handler: quit on Ctrl-C
@@ -353,13 +360,9 @@ int main(int argc, char* argv[])
 	if (!g_setup_log_disable_test_port)
 		mkdir("log-test-port", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 #else
-	mkdir("log-test-port");
-
+	if (!g_setup_log_disable_test_port)
+		mkdir("log-test-port");
 #endif
-	std::cout << std::endl << "* FlylinkDC++ server for test port (c) 2012-2021 pavel.pimenov@gmail.com " << std::endl
-		<< "  - civetweb " << CIVETWEB_VERSION << " (c) https://github.com/civetweb/civetweb" << std::endl
-		<< std::endl << "Usage: fly-server-test-port [-disable-syslog] [-disable-log-test-port]"
-		<< std::endl << std::endl;
 	g_DB.init();
 
 	const char *options[] = {

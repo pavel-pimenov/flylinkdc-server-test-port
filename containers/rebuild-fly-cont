@@ -1,0 +1,10 @@
+cp -a ../fly-server-loop ./test-port
+cp -a ../fly-server-test-port ./test-port
+
+docker-compose down
+docker-compose build
+docker-compose up -d
+
+rm ./test-port/fly-server-loop
+rm ./test-port/fly-server-test-port
+

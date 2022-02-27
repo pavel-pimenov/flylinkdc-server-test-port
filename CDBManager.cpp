@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-//(c) 2007-2021 pavel.pimenov@gmail.com
+//(c) 2007-2022 pavel.pimenov@gmail.com
 //-----------------------------------------------------------------------------
 
 #include <stdio.h>
@@ -130,7 +130,7 @@ static void* thread_proc_udp_tcp_test_port(void* p_param)
 	for (int i = 0; i < l_info->m_ports.size(); ++i)
 	{
 		send_udp_tcp_test_port(l_info->m_PID, l_info->m_CID, l_info->m_ip, l_info->m_ports[i].first, l_info->m_ports[i].second);
-		std::cout <<  "[" << l_str_deep_call << "] " <<
+		std::cout <<  "[" << l_str_deep_call << "]" <<
 			          "[" << ++g_count_all << "] " <<
 		          l_info->get_type_port(i) << " port-thread-test ip = " << l_info->m_ip << ":" << l_info->m_ports[i].first <<
 		          " CID = " << l_info->m_CID << " PID = " << l_info->m_PID << std::endl;

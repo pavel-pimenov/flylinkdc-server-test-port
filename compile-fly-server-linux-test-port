@@ -1,40 +1,49 @@
 #!/bin/bash
 
-# sudo apt install screen build-essential
+# sudo apt install screen build-essential libunwind-dev
 # sudo yum -y install glibc-static libstdc++-static
 # sudo ufw allow 37015
 
-gcc -static -std=c++11 -O3 -o fly-server-test-port fly-server-test-port.cpp \
- CivetServer.cpp \
- civetweb.c \
+rm fly-server-test-port
+
+gcc -static -std=c99 -std=c++11 -O3 -o fly-server-test-port fly-server-test-port.cpp \
+ civetweb/CivetServer.cpp \
+ civetweb/civetweb.c \
  CDBManager.cpp  \
  jsoncpp/jsoncpp.cpp \
- ./zlib-ng/adler32.c \
- ./zlib-ng/chunkset.c \
- ./zlib-ng/compare258.c \
- ./zlib-ng/compress.c \
- ./zlib-ng/crc32.c \
- ./zlib-ng/crc32_comb.c \
- ./zlib-ng/deflate.c \
- ./zlib-ng/deflate_fast.c \
- ./zlib-ng/deflate_medium.c \
- ./zlib-ng/deflate_quick.c \
- ./zlib-ng/deflate_slow.c \
- ./zlib-ng/functable.c \
- ./zlib-ng/gzlib.c \
- ./zlib-ng/gzread.c \
- ./zlib-ng/gzwrite.c \
- ./zlib-ng/infback.c \
- ./zlib-ng/inffast.c \
- ./zlib-ng/inflate.c \
- ./zlib-ng/inftrees.c \
- ./zlib-ng/insert_string.c \
- ./zlib-ng/trees.c \
- ./zlib-ng/uncompr.c \
- ./zlib-ng/zutil.c \
+ zlib-ng/adler32.c \
+ zlib-ng/chunkset.c \
+ zlib-ng/compare258.c \
+ zlib-ng/compress.c \
+ zlib-ng/crc32.c \
+ zlib-ng/crc32_comb.c \
+ zlib-ng/deflate.c \
+ zlib-ng/deflate_fast.c \
+ zlib-ng/deflate_medium.c \
+ zlib-ng/deflate_quick.c \
+ zlib-ng/deflate_slow.c \
+ zlib-ng/functable.c \
+ zlib-ng/infback.c \
+ zlib-ng/inffast.c \
+ zlib-ng/inflate.c \
+ zlib-ng/inftrees.c \
+ zlib-ng/insert_string.c \
+ zlib-ng/trees.c \
+ zlib-ng/uncompr.c \
+ zlib-ng/zutil.c \
+ zlib-ng/deflate_huff.c \
+ zlib-ng/deflate_stored.c \
+ zlib-ng/deflate_rle.c \
+ zlib-ng/crc32_fold.c \
+ zlib-ng/insert_string_roll.c \
+ zlib-ng/slide_hash.c \
  -I ./jsoncpp/include \
  -I ./zlib-ng \
  -D_REENTRANT \
  -D_NDEBUG \
  -lstdc++ -lpthread -ldl -lm
 
+# HEAPPROFILE=/tmp/flynetheap ./fly-server-test-port
+echo "Compile Fly-server test port Ok!"
+valgrind --leak-check=full --leak-resolution=med --track-origins=yes ./fly-server-test-port
+./fly-server-test-port

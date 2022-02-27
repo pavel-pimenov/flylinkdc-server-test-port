@@ -192,7 +192,7 @@ extern uint32_t longest_match_slow_unaligned_avx2(deflate_state *const s, Pos cu
 #endif
 #endif
 
-Z_INTERNAL Z_TLS struct functable_s functable;
+//[-] PPA Z_INTERNAL Z_TLS struct functable_s functable;
 
 Z_INTERNAL void cpu_check_features(void)
 {

@@ -1,7 +1,7 @@
 #FROM ubuntu:latest
 FROM alpine:latest
 
-MAINTAINER pavel.pimenov@gmail.com
+#MAINTAINER pavel.pimenov@gmail.com
 
 RUN apk add --no-cache bash
 

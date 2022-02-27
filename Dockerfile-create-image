@@ -1,5 +1,8 @@
 docker stop fly-server-test-port-docker
 docker system prune -af
-docker build -t flylinkdc/test-port .
-# TODO docker push flylinkdc/test-port
-docker run -d -P --net=host --restart always --name fly-server-test-port-docker flylinkdc/test-port
+
+
+
+#docker build -t flylinkdc/test-port .
+### TODO docker push flylinkdc/test-port
+#docker run -d -P --net=host --restart always --name fly-server-test-port-docker flylinkdc/test-port
