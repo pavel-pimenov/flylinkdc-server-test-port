@@ -21,8 +21,10 @@
  */
 
 #if defined(__GNUC__) || defined(__MINGW32__)
+#ifndef GCC_VERSION
 #define GCC_VERSION                                                            \
 	(__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
+#endif
 #if GCC_VERSION >= 40500
 /* gcc diagnostic pragmas available */
 #define GCC_DIAGNOSTIC
@@ -182,20 +184,18 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 #endif /* __SYMBIAN32__ */
 
 #if defined(__ZEPHYR__)
-#include <time.h>
-
 #include <ctype.h>
-#include <net/socket.h>
-#include <posix/pthread.h>
-#include <posix/time.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <zephyr.h>
+#include <sys/socket.h>
+#include <time.h>
 
-#include <fcntl.h>
-
-#include <libc_extensions.h>
+#include <zephyr/kernel.h>
 
 /* Max worker threads is the max of pthreads minus the main application thread
  * and minus the main civetweb thread, thus -2
@@ -352,7 +352,7 @@ __cyg_profile_func_exit(void *this_fn, void *call_site)
 #endif
 
 
-#if defined(__MACH__) /* Apple OSX section */
+#if defined(__MACH__) && defined(__APPLE__) /* Apple OSX section */
 
 #if defined(__clang__)
 #if (__clang_major__ == 3) && ((__clang_minor__ == 7) || (__clang_minor__ == 8))
@@ -898,7 +898,7 @@ typedef unsigned short int in_port_t;
 #include <dlfcn.h>
 #endif
 
-#if defined(__MACH__)
+#if defined(__MACH__) && defined(__APPLE__)
 #define SSL_LIB "libssl.dylib"
 #define CRYPTO_LIB "libcrypto.dylib"
 #else
@@ -1556,10 +1556,15 @@ static int mg_openssl_initialized = 0;
 #endif
 #if !defined(OPENSSL_API_1_0) && !defined(OPENSSL_API_1_1)                     \
     && !defined(OPENSSL_API_3_0) && !defined(USE_MBEDTLS)
-#error "Please define OPENSSL_API_1_0 or OPENSSL_API_1_1"
+#error "Please define OPENSSL_API_#_# or USE_MBEDTLS"
 #endif
-#if defined(OPENSSL_API_1_0) && defined(OPENSSL_API_1_1)                       \
-    && defined(OPENSSL_API_3_0)
+#if defined(OPENSSL_API_1_0) && defined(OPENSSL_API_1_1)
+#error "Multiple OPENSSL_API versions defined"
+#endif
+#if defined(OPENSSL_API_1_1) && defined(OPENSSL_API_3_0)
+#error "Multiple OPENSSL_API versions defined"
+#endif
+#if defined(OPENSSL_API_1_0) && defined(OPENSSL_API_3_0)
 #error "Multiple OPENSSL_API versions defined"
 #endif
 #if (defined(OPENSSL_API_1_0) || defined(OPENSSL_API_1_1)                      \
@@ -2799,7 +2804,7 @@ mg_set_thread_name(const char *name)
 #elif defined(_GNU_SOURCE) && defined(__GLIBC__)                               \
     && ((__GLIBC__ > 2) || ((__GLIBC__ == 2) && (__GLIBC_MINOR__ >= 12)))
 	/* pthread_setname_np first appeared in glibc in version 2.12 */
-#if defined(__MACH__)
+#if defined(__MACH__) && defined(__APPLE__)
 	/* OS X only current thread name can be changed */
 	(void)pthread_setname_np(threadName);
 #else
@@ -3322,8 +3327,7 @@ sockaddr_to_string(char *buf, size_t len, const union usa *usa)
 		0,
 		NI_NUMERICHOST);
 		*/
-		strncpy(buf, UNIX_DOMAIN_SOCKET_SERVER_NAME, len);
-		buf[len] = 0;
+		mg_strlcpy(buf, UNIX_DOMAIN_SOCKET_SERVER_NAME, len)
 	}
 #endif
 }
@@ -3349,7 +3353,6 @@ gmt_time_string(char *buf, size_t buf_len, time_t *t)
 		strftime(buf, buf_len, "%a, %d %b %Y %H:%M:%S GMT", tm);
 	} else {
 		mg_strlcpy(buf, "Thu, 01 Jan 1970 00:00:00 GMT", buf_len);
-		buf[buf_len - 1] = '\0';
 	}
 }
 
@@ -3764,8 +3767,7 @@ skip_quoted(char **buf,
 	if (end_word > begin_word) {
 		p = end_word - 1;
 		while (*p == quotechar) {
-			/* While the delimiter is quoted, look for the next delimiter.
-			 */
+			/* While the delimiter is quoted, look for the next delimiter. */
 			/* This happens, e.g., in calls from parse_auth_header,
 			 * if the user name contains a " character. */
 
@@ -3827,7 +3829,6 @@ get_header(const struct mg_header *hdr, int num_hdr, const char *name)
 }
 
 
-#if defined(USE_WEBSOCKET)
 /* Retrieve requested HTTP header multiple values, and return the number of
  * found occurrences */
 static int
@@ -3847,7 +3848,6 @@ get_req_headers(const struct mg_request_info *ri,
 	}
 	return cnt;
 }
-#endif
 
 
 CIVETWEB_API const char *
@@ -8367,7 +8367,7 @@ mg_md5(char buf[33], ...)
 
 /* Check the user's password, return 1 if OK */
 static int
-check_password(const char *method,
+check_password_digest(const char *method,
                const char *ha1,
                const char *uri,
                const char *nonce,
@@ -8486,7 +8486,10 @@ open_auth_file(struct mg_connection *conn,
 
 /* Parsed Authorization header */
 struct ah {
-	char *user, *uri, *cnonce, *response, *qop, *nc, *nonce;
+	char *user;
+	int type;             /* 1 = basic, 2 = digest */
+	char *plain_password; /* Basic only */
+	char *uri, *cnonce, *response, *qop, *nc, *nonce; /* Digest only */
 };
 
 
@@ -8506,8 +8509,44 @@ parse_auth_header(struct mg_connection *conn,
 	}
 
 	(void)memset(ah, 0, sizeof(*ah));
-	if (((auth_header = mg_get_header(conn, "Authorization")) == NULL)
-	    || mg_strncasecmp(auth_header, "Digest ", 7) != 0) {
+	auth_header = mg_get_header(conn, "Authorization");
+
+	if (auth_header == NULL) {
+		/* No Authorization header at all */
+		return 0;
+	}
+	if (0 == mg_strncasecmp(auth_header, "Basic ", 6)) {
+		/* Basic Auth (we never asked for this, but some client may send it) */
+		char *split;
+		const char *userpw_b64 = auth_header + 6;
+		size_t userpw_b64_len = strlen(userpw_b64);
+		size_t buf_len_r = buf_size;
+		if (mg_base64_decode(
+		        userpw_b64, userpw_b64_len, (unsigned char *)buf, &buf_len_r)
+		    != -1) {
+			return 0; /* decode error */
+		}
+		split = strchr(buf, ':');
+		if (!split) {
+			return 0; /* Format error */
+		}
+
+		/* Separate string at ':' */
+		*split = 0;
+
+		/* User name is before ':', Password is after ':'  */
+		ah->user = buf;
+		ah->type = 1;
+		ah->plain_password = split + 1;
+
+		return 1;
+
+	} else if (0 == mg_strncasecmp(auth_header, "Digest ", 7)) {
+		/* Digest Auth ... implemented below */
+		ah->type = 2;
+
+	} else {
+		/* Unknown or invalid Auth method */
 		return 0;
 	}
 
@@ -8592,15 +8631,7 @@ parse_auth_header(struct mg_connection *conn,
 	(void)nonce;
 #endif
 
-	/* CGI needs it as REMOTE_USER */
-	if (ah->user != NULL) {
-		conn->request_info.remote_user =
-		    mg_strdup_ctx(ah->user, conn->phys_ctx);
-	} else {
-		return 0;
-	}
-
-	return 1;
+	return (ah->user != NULL);
 }
 
 
@@ -8735,7 +8766,26 @@ read_auth_file(struct mg_file *filep,
 
 		if (!strcmp(workdata->ah.user, workdata->f_user)
 		    && !strcmp(workdata->domain, workdata->f_domain)) {
-			return check_password(workdata->conn->request_info.request_method,
+			switch (workdata->ah.type) {
+			case 1: /* Basic */
+			{
+				size_t mlen = strlen(workdata->f_user)
+				              + strlen(workdata->domain)
+				              + strlen(workdata->ah.plain_password) + 3;
+				char md5[33];
+
+				mg_md5(md5,
+				       workdata->f_user,
+				       ":",
+				       workdata->domain,
+				       ":",
+				       workdata->ah.plain_password,
+				       NULL);
+				return 0 == memcmp(workdata->f_ha1, md5, 33);
+			}
+			case 2: /* Digest */
+				return check_password_digest(
+				    workdata->conn->request_info.request_method,
 			                      workdata->f_ha1,
 			                      workdata->ah.uri,
 			                      workdata->ah.nonce,
@@ -8743,6 +8793,9 @@ read_auth_file(struct mg_file *filep,
 			                      workdata->ah.cnonce,
 			                      workdata->ah.qop,
 			                      workdata->ah.response);
+			default: /* None/Other/Unknown */
+				return 0;
+			}
 		}
 	}
 
@@ -8767,6 +8820,10 @@ authorize(struct mg_connection *conn, struct mg_file *filep, const char *realm)
 	if (!parse_auth_header(conn, buf, sizeof(buf), &workdata.ah)) {
 		return 0;
 	}
+
+	/* CGI needs it as REMOTE_USER */
+	conn->request_info.remote_user =
+	    mg_strdup_ctx(workdata.ah.user, conn->phys_ctx);
 
 	if (realm) {
 		workdata.domain = realm;
@@ -9578,7 +9635,6 @@ print_dir_entry(struct mg_connection *conn, struct de *de)
 		strftime(mod, sizeof(mod), "%d-%b-%Y %H:%M", tm);
 	} else {
 		mg_strlcpy(mod, "01-Jan-1970 00:00", sizeof(mod));
-		mod[sizeof(mod) - 1] = '\0';
 	}
 	mg_printf(conn,
 	          "<tr><td><a href=\"%s%s\">%s%s</a></td>"
@@ -11475,7 +11531,7 @@ handle_cgi_request(struct mg_connection *conn,
 	size_t buflen;
 	int headers_len, data_len, i, truncated;
 	int fdin[2] = {-1, -1}, fdout[2] = {-1, -1}, fderr[2] = {-1, -1};
-	const char *status, *status_text, *connection_state;
+	const char *status, *status_text;
 	char *pbuf, dir[UTF8_PATH_MAX], *p;
 	struct mg_request_info ri;
 	struct cgi_environment blk;
@@ -11723,9 +11779,8 @@ handle_cgi_request(struct mg_connection *conn,
 	} else {
 		conn->status_code = 200;
 	}
-	connection_state =
-	    get_header(ri.http_headers, ri.num_headers, "Connection");
-	if (!header_has_option(connection_state, "keep-alive")) {
+
+	if (!should_keep_alive(conn)) {
 		conn->must_close = 1;
 	}
 
@@ -12747,12 +12802,12 @@ dav_lock_file(struct mg_connection *conn, const char *path)
 				       "\x01",
 				       conn->request_info.remote_user,
 				       NULL);
-				strncpy(dav_lock[i].path,
+				mg_strlcpy(dav_lock[i].path,
 				        link_buf,
-				        sizeof(dav_lock[i].path) - 1);
-				strncpy(dav_lock[i].user,
+				           sizeof(dav_lock[i].path));
+				mg_strlcpy(dav_lock[i].user,
 				        conn->request_info.remote_user,
-				        sizeof(dav_lock[i].user) - 1);
+				           sizeof(dav_lock[i].user));
 				lock_index = i;
 				break;
 			}
@@ -12927,8 +12982,10 @@ mg_unlock_context(struct mg_context *ctx)
 #if defined(USE_WEBSOCKET)
 
 #if !defined(NO_SSL_DL)
+#if !defined(OPENSSL_API_3_0)
 #define SHA_API static
 #include "sha1.inl"
+#endif
 #endif
 
 static int
@@ -12937,7 +12994,9 @@ send_websocket_handshake(struct mg_connection *conn, const char *websock_key)
 	static const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 	char buf[100], sha[20], b64_sha[sizeof(sha) * 2];
 	size_t dst_len = sizeof(b64_sha);
+#if !defined(OPENSSL_API_3_0)
 	SHA_CTX sha_ctx;
+#endif
 	int truncated;
 
 	/* Calculate Sec-WebSocket-Accept reply from Sec-WebSocket-Key. */
@@ -12949,9 +13008,18 @@ send_websocket_handshake(struct mg_connection *conn, const char *websock_key)
 
 	DEBUG_TRACE("%s", "Send websocket handshake");
 
+#if defined(OPENSSL_API_3_0)
+	EVP_Digest((unsigned char *)buf,
+	           (uint32_t)strlen(buf),
+	           (unsigned char *)sha,
+	           NULL,
+	           EVP_get_digestbyname("sha1"),
+	           NULL);
+#else
 	SHA1_Init(&sha_ctx);
 	SHA1_Update(&sha_ctx, (unsigned char *)buf, (uint32_t)strlen(buf));
 	SHA1_Final((unsigned char *)sha, &sha_ctx);
+#endif
 	mg_base64_encode((unsigned char *)sha, sizeof(sha), b64_sha, &dst_len);
 	mg_printf(conn,
 	          "HTTP/1.1 101 Switching Protocols\r\n"
@@ -13782,30 +13850,40 @@ handle_websocket_request(struct mg_connection *conn,
 static int
 should_switch_to_protocol(const struct mg_connection *conn)
 {
-	const char *upgrade, *connection;
+	const char *connection_headers[8];
+	const char *upgrade_to;
+	int connection_header_count, i, should_upgrade;
 
 	/* A websocket protocoll has the following HTTP headers:
 	 *
 	 * Connection: Upgrade
 	 * Upgrade: Websocket
+	 *
+	 * It seems some clients use multiple headers:
+	 * see https://github.com/civetweb/civetweb/issues/1083
 	 */
-
-	connection = mg_get_header(conn, "Connection");
-	if (connection == NULL) {
+	connection_header_count = get_req_headers(&conn->request_info,
+	                                          "Connection",
+	                                          connection_headers,
+	                                          8);
+	should_upgrade = 0;
+	for (i = 0; i < connection_header_count; i++) {
+		if (0 != mg_strcasestr(connection_headers[i], "upgrade")) {
+			should_upgrade = 1;
+		}
+	}
+	if (!should_upgrade) {
 		return PROTOCOL_TYPE_HTTP1;
 	}
-	if (!mg_strcasestr(connection, "upgrade")) {
-		return PROTOCOL_TYPE_HTTP1;
-	}
 
-	upgrade = mg_get_header(conn, "Upgrade");
-	if (upgrade == NULL) {
+	upgrade_to = mg_get_header(conn, "Upgrade");
+	if (upgrade_to == NULL) {
 		/* "Connection: Upgrade" without "Upgrade" Header --> Error */
 		return -1;
 	}
 
 	/* Upgrade to ... */
-	if (0 != mg_strcasestr(upgrade, "websocket")) {
+	if (0 != mg_strcasestr(upgrade_to, "websocket")) {
 		/* The headers "Host", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol" and
 		 * "Sec-WebSocket-Version" are also required.
 		 * Don't check them here, since even an unsupported websocket protocol
@@ -13814,7 +13892,7 @@ should_switch_to_protocol(const struct mg_connection *conn)
 		 */
 		return PROTOCOL_TYPE_WEBSOCKET; /* Websocket */
 	}
-	if (0 != mg_strcasestr(upgrade, "h2")) {
+	if (0 != mg_strcasestr(upgrade_to, "h2")) {
 		return PROTOCOL_TYPE_HTTP2; /* Websocket */
 	}
 
@@ -14847,7 +14925,8 @@ handle_request(struct mg_connection *conn)
 #if defined(NO_FILES)
 		if (1) {
 #else
-		if (conn->dom_ctx->config[DOCUMENT_ROOT] == NULL) {
+		if (conn->dom_ctx->config[DOCUMENT_ROOT] == NULL
+		    || conn->dom_ctx->config[PUT_DELETE_PASSWORDS_FILE] == NULL) {
 #endif
 			/* This code path will not be called for request handlers */
 			DEBUG_ASSERT(handler_info == NULL);
@@ -14858,7 +14937,7 @@ handle_request(struct mg_connection *conn)
 			                   405,
 			                   "%s method not allowed",
 			                   conn->request_info.request_method);
-			DEBUG_TRACE("%s", "all file based requests rejected");
+			DEBUG_TRACE("%s", "all file based put/delete requests rejected");
 			return;
 		}
 
@@ -15927,7 +16006,12 @@ log_access(const struct mg_connection *conn)
 	const struct mg_request_info *ri;
 	struct mg_file fi;
 	char date[64], src_addr[IP_ADDR_STR_LEN];
+#if defined(REENTRANT_TIME)
+	struct tm _tm;
+	struct tm *tm = &_tm;
+#else
 	struct tm *tm;
+#endif
 
 	const char *referer;
 	const char *user_agent;
@@ -16005,12 +16089,15 @@ log_access(const struct mg_connection *conn)
 
 	/* If we did not get a log message from Lua, create it here. */
 	if (!log_buf[0]) {
+#if defined(REENTRANT_TIME)
+		localtime_r(&conn->conn_birth_time, tm);
+#else
 		tm = localtime(&conn->conn_birth_time);
+#endif
 		if (tm != NULL) {
 			strftime(date, sizeof(date), "%d/%b/%Y:%H:%M:%S %z", tm);
 		} else {
 			mg_strlcpy(date, "01/Jan/1970:00:00:00 +0000", sizeof(date));
-			date[sizeof(date) - 1] = '\0';
 		}
 
 		ri = &conn->request_info;
@@ -19196,6 +19283,7 @@ init_connection(struct mg_connection *conn)
 	conn->data_len = 0;
 	conn->handled_requests = 0;
 	conn->connection_type = CONNECTION_TYPE_INVALID;
+	conn->request_info.acceptedWebSocketSubprotocol = NULL;
 	mg_set_user_connection_data(conn, NULL);
 
 #if defined(USE_SERVER_STATS)
@@ -22262,10 +22350,6 @@ mg_init_library(unsigned features)
 			return 0;
 		}
 
-#if defined(USE_LUA)
-		lua_init_optional_libraries();
-#endif
-
 		len = 1;
 		for (i = 0; http_methods[i].name != NULL; i++) {
 			size_t sl = strlen(http_methods[i].name);
@@ -22277,6 +22361,8 @@ mg_init_library(unsigned features)
 		all_methods = mg_malloc(len);
 		if (!all_methods) {
 			/* Must never happen */
+			mg_global_unlock();
+			(void)pthread_mutex_destroy(&global_lock_mutex);
 			return 0;
 		}
 		all_methods[0] = 0;
@@ -22289,6 +22375,10 @@ mg_init_library(unsigned features)
 			}
 		}
 	}
+
+#if defined(USE_LUA)
+	lua_init_optional_libraries();
+#endif
 
 #if (defined(OPENSSL_API_1_0) || defined(OPENSSL_API_1_1)                      \
      || defined(OPENSSL_API_3_0))                                              \

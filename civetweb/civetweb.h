@@ -1410,7 +1410,7 @@ struct mg_match_context {
 */
 CIVETWEB_API ptrdiff_t mg_match(const char *pat,
                                 const char *str,
-                                struct mg_match_context *mcx)
+                                struct mg_match_context *mcx);
 #endif
 
 

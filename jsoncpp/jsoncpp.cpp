@@ -6,28 +6,28 @@
 // //////////////////////////////////////////////////////////////////////
 
 /*
-The JsonCpp library's source code, including accompanying documentation,
+The JsonCpp library's source code, including accompanying documentation, 
 tests and demonstration applications, are licensed under the following
 conditions...
 
-Baptiste Lepilleur and The JsonCpp Authors explicitly disclaim copyright in all
-jurisdictions which recognize such a disclaimer. In such jurisdictions,
+Baptiste Lepilleur and The JsonCpp Authors explicitly disclaim copyright in all 
+jurisdictions which recognize such a disclaimer. In such jurisdictions, 
 this software is released into the Public Domain.
 
 In jurisdictions which do not recognize Public Domain property (e.g. Germany as of
 2010), this software is Copyright (c) 2007-2010 by Baptiste Lepilleur and
 The JsonCpp Authors, and is released under the terms of the MIT License (see below).
 
-In jurisdictions which recognize Public Domain property, the user of this
-software may choose to accept it either as 1) Public Domain, 2) under the
-conditions of the MIT License (see below), or 3) under the terms of dual
+In jurisdictions which recognize Public Domain property, the user of this 
+software may choose to accept it either as 1) Public Domain, 2) under the 
+conditions of the MIT License (see below), or 3) under the terms of dual 
 Public Domain/MIT License conditions described here, as they choose.
 
 The MIT License is about as close to Public Domain as a license can get, and is
 described in clear, concise terms at:
 
    http://en.wikipedia.org/wiki/MIT_License
-
+   
 The full text of the MIT License follows:
 
 ========================================================================
@@ -67,10 +67,6 @@ license you like.
 // //////////////////////////////////////////////////////////////////////
 // End of content of file: LICENSE
 // //////////////////////////////////////////////////////////////////////
-
-
-
-
 
 
 #include "json/json.h"
@@ -211,8 +207,8 @@ Iter fixZerosInTheEnd(Iter begin, Iter end, unsigned int precision) {
     // Don't delete the last zero before the decimal point.
     if (begin != (end - 1) && begin != (end - 2) && *(end - 2) == '.') {
       if (precision) {
-        return end;
-      }
+      return end;
+    }
       return end - 2;
     }
   }
@@ -845,7 +841,7 @@ bool Reader::decodeDouble(Token& token, Value& decoded) {
     else if (value == std::numeric_limits<double>::lowest())
       value = -std::numeric_limits<double>::infinity();
     else if (!std::isinf(value))
-      return addError(
+    return addError(
         "'" + String(token.start_, token.end_) + "' is not a number.", token);
   }
   decoded = value;
@@ -1897,7 +1893,7 @@ bool OurReader::decodeDouble(Token& token, Value& decoded) {
     else if (value == std::numeric_limits<double>::lowest())
       value = -std::numeric_limits<double>::infinity();
     else if (!std::isinf(value))
-      return addError(
+    return addError(
         "'" + String(token.start_, token.end_) + "' is not a number.", token);
   }
   decoded = value;
@@ -3828,8 +3824,8 @@ void Value::Comments::set(CommentPlacement slot, String comment) {
     return;
   if (!ptr_)
     ptr_ = std::unique_ptr<Array>(new Array());
-  (*ptr_)[slot] = std::move(comment);
-}
+    (*ptr_)[slot] = std::move(comment);
+  }
 
 void Value::setComment(String comment, CommentPlacement placement) {
   if (!comment.empty() && (comment.back() == '\n')) {
@@ -3859,12 +3855,15 @@ ptrdiff_t Value::getOffsetStart() const { return start_; }
 
 ptrdiff_t Value::getOffsetLimit() const { return limit_; }
 
-String Value::toStyledString() const {
+String Value::toStyledString(bool p_use_end_line /* = true */) const {  // [+]FlylinkDC++
   StreamWriterBuilder builder;
 
   String out = this->hasComment(commentBefore) ? "\n" : "";
   out += Json::writeString(builder, *this);
-  out += '\n';
+  if(p_use_end_line) // [+]FlylinkDC++
+    out += '\n';
+  else
+    out += ' ';
 
   return out;
 }
@@ -4663,7 +4662,7 @@ void StyledWriter::writeIndent() {
     char last = document_[document_.length() - 1];
     if (last == ' ') // already indented
       return;
-    if (last != '\n') // Comments may add new-line
+    if (last != '\n' && use_end_line_) // [+]FlylinkDC++ // Comments may add new-line
       document_ += '\n';
   }
   document_ += indentString_;

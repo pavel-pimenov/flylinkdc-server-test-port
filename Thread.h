@@ -20,13 +20,13 @@
 #define DCPLUSPLUS_DCPP_THREAD_H
 
 
+#include "Exception.h"
+
 #ifndef _WIN32
 #include <unistd.h> // + PPA ubuntu 13.04
 #include <sys/resource.h>
 #include <syslog.h>
 typedef int LONG;
-#else
-#include "windows.h"
 #endif
 
 class CFlySafeGuard
@@ -71,14 +71,24 @@ static pthread_t pthread_self(void)
 typedef signed char int8_t;
 typedef signed short int16_t;
 typedef signed int int32_t;
+#if defined (_WIN32) || defined (__linux__)  // __FreeBSD__
+//typedef signed long long int64_t;
+#endif
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
+#if defined (_WIN32) || defined (__linux__) // __FreeBSD__
+// typedef unsigned long long uint64_t;
+#endif
+
+typedef std::vector<std::string> TStringList;
+
 
 #ifdef FLYLINKDC_USE_BOOST_LOCK
 typedef boost::recursive_mutex  CriticalSection;
 typedef boost::detail::spinlock FastCriticalSection;
 typedef boost::lock_guard<boost::recursive_mutex> Lock;
+typedef Lock FastLock;
 #else
 class CriticalSection
 {
@@ -87,20 +97,25 @@ class CriticalSection
 		void lock()
 		{
 			EnterCriticalSection(&cs);
+			dcdrun(counter++);
 		}
 		void unlock()
 		{
+			dcassert(--counter >= 0);
 			LeaveCriticalSection(&cs);
 		}
 		explicit CriticalSection()
 		{
+			dcdrun(counter = 0;);
 			InitializeCriticalSectionAndSpinCount(&cs, 100); // [!] IRainman: InitializeCriticalSectionAndSpinCount
 		}
 		~CriticalSection()
 		{
+			dcassert(counter == 0);
 			DeleteCriticalSection(&cs);
 		}
 	private:
+		dcdrun(volatile long counter;)
 		CRITICAL_SECTION cs;
 #else
 	public:

@@ -6,28 +6,28 @@
 // //////////////////////////////////////////////////////////////////////
 
 /*
-The JsonCpp library's source code, including accompanying documentation,
+The JsonCpp library's source code, including accompanying documentation, 
 tests and demonstration applications, are licensed under the following
 conditions...
 
-Baptiste Lepilleur and The JsonCpp Authors explicitly disclaim copyright in all
-jurisdictions which recognize such a disclaimer. In such jurisdictions,
+Baptiste Lepilleur and The JsonCpp Authors explicitly disclaim copyright in all 
+jurisdictions which recognize such a disclaimer. In such jurisdictions, 
 this software is released into the Public Domain.
 
 In jurisdictions which do not recognize Public Domain property (e.g. Germany as of
 2010), this software is Copyright (c) 2007-2010 by Baptiste Lepilleur and
 The JsonCpp Authors, and is released under the terms of the MIT License (see below).
 
-In jurisdictions which recognize Public Domain property, the user of this
-software may choose to accept it either as 1) Public Domain, 2) under the
-conditions of the MIT License (see below), or 3) under the terms of dual
+In jurisdictions which recognize Public Domain property, the user of this 
+software may choose to accept it either as 1) Public Domain, 2) under the 
+conditions of the MIT License (see below), or 3) under the terms of dual 
 Public Domain/MIT License conditions described here, as they choose.
 
 The MIT License is about as close to Public Domain as a license can get, and is
 described in clear, concise terms at:
 
    http://en.wikipedia.org/wiki/MIT_License
-
+   
 The full text of the MIT License follows:
 
 ========================================================================
@@ -963,7 +963,7 @@ public:
   /// \post type() is arrayValue
   void resize(ArrayIndex newSize);
 
-  //@{
+  ///@{
   /// Access an array element (zero based index). If the array contains less
   /// than index element, then null value are inserted in the array so that
   /// its size is index+1.
@@ -971,15 +971,15 @@ public:
   /// this from the operator[] which takes a string.)
   Value& operator[](ArrayIndex index);
   Value& operator[](int index);
-  //@}
+  ///@}
 
-  //@{
+  ///@{
   /// Access an array element (zero based index).
   /// (You may need to say 'value[0u]' to get your compiler to distinguish
   /// this from the operator[] which takes a string.)
   const Value& operator[](ArrayIndex index) const;
   const Value& operator[](int index) const;
-  //@}
+  ///@}
 
   /// If the array contains at least index+1 elements, returns the element
   /// value, otherwise returns defaultValue.
@@ -1103,7 +1103,7 @@ public:
   /// Include delimiters and embedded newlines.
   String getComment(CommentPlacement placement) const;
 
-  String toStyledString() const;
+  String toStyledString(bool p_use_end_line = true) const; // [+]FlylinkDC++
 
   const_iterator begin() const;
   const_iterator end() const;
@@ -2159,6 +2159,8 @@ private:
   unsigned int rightMargin_{74};
   unsigned int indentSize_{3};
   bool addChildValues_{false};
+public:
+  bool use_end_line_{true}; // [+]FlylinkDC++
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
